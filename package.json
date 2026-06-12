@@ -1,0 +1,16 @@
+{
+  "name": "tiny-empires",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tiny Empires: Road to Conquest — Multiplayer Node-Based RTS",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "build": "cd server && npm run build && cd ../client && npm run build",
+    "start": "cd server && npm start"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
