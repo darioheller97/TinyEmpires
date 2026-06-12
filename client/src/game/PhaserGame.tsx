@@ -1,13 +1,17 @@
 import React, { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
-import GameScene from './GameScene';
+import GameScene, { SelectionInfo } from './GameScene';
+import { GameClient } from '../network/GameClient';
 
 interface Props {
   onResourceUpdate: (resources: { wood: number; food: number; gold: number; popUsed: number; popCap: number }) => void;
   onMapBounds: (bounds: { width: number; height: number }) => void;
+  onSelectionChange: (selection: SelectionInfo) => void;
+  onBuildingsUpdate?: (counts: Map<string, number>) => void;
+  onSceneReady?: (getClient: () => GameClient | null) => void;
 }
 
-export default function PhaserGame({ onResourceUpdate, onMapBounds }: Props) {
+export default function PhaserGame({ onResourceUpdate, onMapBounds, onSelectionChange, onBuildingsUpdate, onSceneReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
 
@@ -36,9 +40,18 @@ export default function PhaserGame({ onResourceUpdate, onMapBounds }: Props) {
       const game = new Phaser.Game(config);
       gameRef.current = game;
 
-      // Expose callbacks to the scene via registry
       game.registry.set('onResourceUpdate', onResourceUpdate);
       game.registry.set('onMapBounds', onMapBounds);
+      game.registry.set('onSelectionChange', onSelectionChange);
+      if (onBuildingsUpdate) game.registry.set('onBuildingsUpdate', onBuildingsUpdate);
+
+      // Expose scene getClient when game is ready
+      game.events.on('ready', () => {
+        const scene = game.scene.getScene('GameScene') as GameScene;
+        if (scene && onSceneReady) {
+          onSceneReady(() => scene.getClient());
+        }
+      });
     }
 
     const handleResize = () => {

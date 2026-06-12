@@ -6,7 +6,7 @@ export class GameClient {
   private onStateChangeCb: ((state: any) => void) | null = null;
 
   constructor(wsUrl: string) {
-    this.client = new Colyseus.Client(`ws://${wsUrl}`);
+    this.client = new Colyseus.Client(wsUrl);
   }
 
   get sessionId(): string | null {
@@ -34,6 +34,18 @@ export class GameClient {
   setWaypoint(intersectionId: string, roadId: string, direction: number): void {
     if (this.room) {
       this.room.send('set_waypoint', { intersectionId, roadId, direction });
+    }
+  }
+
+  buildStructure(type: string): void {
+    if (this.room) {
+      this.room.send('build_structure', { type });
+    }
+  }
+
+  upgradeTownHall(): void {
+    if (this.room) {
+      this.room.send('upgrade_town_hall', {});
     }
   }
 

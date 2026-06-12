@@ -28,6 +28,10 @@ export class CityNode extends Schema {
   @type('number')
   maxHealth: number = 1000;
 
+  // Building slot limit increases with town hall level
+  @type('number')
+  maxBuildings: number = 2;
+
   constructor(id: string, x: number, y: number, name: string) {
     super();
     this.id = id;

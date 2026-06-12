@@ -28,10 +28,17 @@ export class Player extends Schema {
   @type('string')
   connectedCityId: string = '';
 
+  // Track last tick resource was applied to avoid double-generation
+  lastEconomyTick: number = 0;
+
   constructor(id: string, name: string, colorHex: string) {
     super();
     this.id = id;
     this.name = name;
     this.colorHex = colorHex;
+  }
+
+  get buildingSlots(): number {
+    return 2; // All players get 2 building slots per city initially
   }
 }
