@@ -2,57 +2,50 @@ import Phaser from 'phaser';
 import { GameClient } from '../network/GameClient';
 
 interface CityData {
-  id: string;
-  x: number;
-  y: number;
-  name: string;
-  ownerId: string;
-  townHallLevel: number;
-  influenceRadius: number;
-  maxBuildings: number;
+  id: string; x: number; y: number; name: string; ownerId: string;
+  townHallLevel: number; influenceRadius: number; maxBuildings: number;
 }
-
 interface IntersectionData {
-  id: string;
-  x: number;
-  y: number;
-  name: string;
+  id: string; x: number; y: number; name: string;
 }
-
 interface RoadData {
-  id: string;
-  fromId: string;
-  toId: string;
-  splinePoints: { x: number; y: number }[];
+  id: string; fromId: string; toId: string; splinePoints: { x: number; y: number }[];
 }
-
 interface BuildData {
-  id: string;
-  cityId: string;
-  type: string;
-  x: number;
-  y: number;
-  level: number;
+  id: string; cityId: string; type: string; x: number; y: number; level: number;
+}
+interface UnitData {
+  id: string; ownerId: string; type: string; roadId: string; t: number;
+  health: number; maxHealth: number;
 }
 
-export type SelectionType = 'city' | 'intersection' | 'building' | 'none';
-
+export type SelectionType = 'city' | 'intersection' | 'building' | 'unit' | 'none';
 export interface SelectionInfo {
-  type: SelectionType;
-  id: string;
-  name: string;
-  data?: any;
+  type: SelectionType; id: string; name: string; data?: any;
 }
+
+const TROOP_COLORS: Record<string, number> = {
+  knight: 0x4477cc, lancer: 0xcc4444, archer: 0x44cc44, monk: 0xcccc44,
+};
+const TROOP_LABELS: Record<string, string> = {
+  knight: 'K', lancer: 'L', archer: 'A', monk: 'M',
+};
 
 export default class GameScene extends Phaser.Scene {
   private roads: Phaser.GameObjects.Graphics[] = [];
+  private roadArrowGfx: Phaser.GameObjects.Graphics | null = null;
   private cities: Map<string, { gfx: Phaser.GameObjects.Container; data: CityData }> = new Map();
   private intersectionGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: IntersectionData }> = new Map();
   private buildingGfx: Map<string, Phaser.GameObjects.Container> = new Map();
+  private unitGfx: Map<string, Phaser.GameObjects.Container> = new Map();
   private client: GameClient | null = null;
   private selection: SelectionInfo = { type: 'none', id: '', name: '' };
   private selectionRing: Phaser.GameObjects.Graphics | null = null;
   private cityBuildingCounts: Map<string, number> = new Map();
+
+  // Radial menu state
+  private radialMenu: Phaser.GameObjects.Container | null = null;
+  private radialTarget: { intersectionId: string; incomingRoadId: string; x: number; y: number } | null = null;
 
   // Hardcoded map
   private mapCities: CityData[] = [
@@ -71,72 +64,117 @@ export default class GameScene extends Phaser.Scene {
     const points: { x: number; y: number }[] = [];
     const all = [start, ...via, end];
     for (let i = 0; i < all.length - 1; i++) {
-      const a = all[i];
-      const b = all[i + 1];
-      const steps = 20;
-      for (let s = 0; s <= steps; s++) {
-        const t = s / steps;
+      const a = all[i]; const b = all[i + 1];
+      for (let s = 0; s <= 20; s++) {
+        const t = s / 20;
         points.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
       }
     }
     return points;
   }
 
-  constructor() {
-    super({ key: 'GameScene' });
-  }
+  constructor() { super({ key: 'GameScene' }); }
 
   create(): void {
     this.cameras.main.setBounds(0, 0, 1600, 800);
     this.cameras.main.centerOn(800, 400);
-
     this.drawTerrain();
-    this.mapRoads.forEach(road => this.drawRoad(road));
+    this.mapRoads.forEach(r => this.drawRoad(r));
+    this.drawRoadArrows();
     this.mapIntersections.forEach(is => this.drawIntersection(is));
     this.mapCities.forEach(city => this.drawCity(city));
-
     this.selectionRing = this.add.graphics();
+    this.roadArrowGfx = this.add.graphics();
 
     const onMapBounds = this.game.registry.get('onMapBounds') as (b: { width: number; height: number }) => void;
     if (onMapBounds) onMapBounds({ width: 1600, height: 800 });
-
     this.setupCameraControls();
     this.connectToServer();
   }
 
+  update(): void {
+    // Update unit positions each frame for smooth movement
+    this.unitGfx.forEach((container, id) => {
+      const pos = container.getData('worldPos') as { x: number; y: number } | undefined;
+      if (pos) {
+        container.setPosition(pos.x, pos.y);
+      }
+    });
+  }
+
+  // ── Terrain ───────────────────────────────────────────────
   private drawTerrain(): void {
     const gfx = this.add.graphics();
-    const tileSize = 64;
-    const cols = 25;
-    const rows = 13;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < 13; r++) {
+      for (let c = 0; c < 25; c++) {
         gfx.fillStyle((r + c) % 2 === 0 ? 0x3d7a33 : 0x4a8c3f, 1);
-        gfx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
+        gfx.fillRect(c * 64, r * 64, 64, 64);
       }
     }
   }
 
+  // ── Roads ─────────────────────────────────────────────────
   private drawRoad(road: RoadData): void {
     const gfx = this.add.graphics();
     const pts = road.splinePoints;
     gfx.lineStyle(16, 0x8b6f47, 1);
     if (pts.length > 1) {
-      gfx.beginPath();
-      gfx.moveTo(pts[0].x, pts[0].y);
+      gfx.beginPath(); gfx.moveTo(pts[0].x, pts[0].y);
       for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
       gfx.strokePath();
     }
     gfx.lineStyle(2, 0x6b4f2e, 0.6);
     if (pts.length > 1) {
-      gfx.beginPath();
-      gfx.moveTo(pts[0].x, pts[0].y);
+      gfx.beginPath(); gfx.moveTo(pts[0].x, pts[0].y);
       for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
       gfx.strokePath();
     }
     this.roads.push(gfx);
   }
 
+  private drawRoadArrows(): void {
+    if (!this.roadArrowGfx) return;
+    this.roadArrowGfx.clear();
+    const waypointData = this.game.registry.get('waypointData') as Map<string, number> | undefined;
+    if (!waypointData) return;
+
+    this.roadArrowGfx.lineStyle(3, 0xffd700, 0.8);
+    this.mapRoads.forEach((road) => {
+      const pts = road.splinePoints;
+      // Draw arrow at 60% and 80% of the road
+      [0.6, 0.8].forEach((ratio) => {
+        const idx = Math.floor(ratio * (pts.length - 1));
+        if (idx >= pts.length - 1) return;
+        const p = pts[idx];
+        const next = pts[Math.min(idx + 1, pts.length - 1)];
+        const angle = Math.atan2(next.y - p.y, next.x - p.x);
+        const len = 8;
+        const ax = p.x + Math.cos(angle) * len;
+        const ay = p.y + Math.sin(angle) * len;
+        this.roadArrowGfx!.beginPath();
+        this.roadArrowGfx!.moveTo(p.x, p.y);
+        this.roadArrowGfx!.lineTo(ax, ay);
+        this.roadArrowGfx!.strokePath();
+        // Arrowhead
+        const headLen = 6;
+        const headAngle = 0.6;
+        this.roadArrowGfx!.beginPath();
+        this.roadArrowGfx!.moveTo(ax, ay);
+        this.roadArrowGfx!.lineTo(
+          ax - Math.cos(angle - headAngle) * headLen,
+          ay - Math.sin(angle - headAngle) * headLen
+        );
+        this.roadArrowGfx!.moveTo(ax, ay);
+        this.roadArrowGfx!.lineTo(
+          ax - Math.cos(angle + headAngle) * headLen,
+          ay - Math.sin(angle + headAngle) * headLen
+        );
+        this.roadArrowGfx!.strokePath();
+      });
+    });
+  }
+
+  // ── Intersections ─────────────────────────────────────────
   private drawIntersection(is: IntersectionData): void {
     const container = this.add.container(is.x, is.y);
     const circle = this.add.circle(0, 0, 18, 0x5c4033, 1);
@@ -147,17 +185,94 @@ export default class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
     container.add([circle, inner, label]);
     container.setInteractive(new Phaser.Geom.Circle(0, 0, 22), Phaser.Geom.Circle.Contains);
-    container.on('pointerdown', () => this.selectEntity('intersection', is.id, is.name, is));
+    container.on('pointerdown', () => this.onIntersectionClick(is));
     container.on('pointerover', () => container.setScale(1.15));
     container.on('pointerout', () => { if (this.selection.id !== is.id) container.setScale(1); });
     this.intersectionGfx.set(is.id, { gfx: container, data: is });
   }
 
+  private onIntersectionClick(is: IntersectionData): void {
+    this.selectEntity('intersection', is.id, is.name, is);
+    this.showRadialMenu(is);
+  }
+
+  private showRadialMenu(is: IntersectionData): void {
+    this.hideRadialMenu();
+
+    // Find the incoming road
+    const incomingRoad = this.mapRoads.find(r => r.toId === is.id) || null;
+    if (!incomingRoad) return;
+
+    this.radialTarget = { intersectionId: is.id, incomingRoadId: incomingRoad.id, x: is.x, y: is.y };
+
+    const container = this.add.container(is.x, is.y);
+    const bg = this.add.circle(0, 0, 50, 0x000000, 0.6);
+    bg.setStrokeStyle(2, 0xffd700, 0.8);
+
+    // Three directional buttons
+    const opts: { label: string; direction: number; angle: number }[] = [
+      { label: '←', direction: -1, angle: -Math.PI / 2 },
+      { label: '↑', direction: 0, angle: 0 },
+      { label: '→', direction: 1, angle: Math.PI / 2 },
+    ];
+
+    opts.forEach((opt) => {
+      const radius = 32;
+      const bx = Math.sin(opt.angle) * radius;
+      const by = -Math.cos(opt.angle) * radius;
+      const btn = this.add.circle(bx, by, 14, 0x5c4033, 1);
+      btn.setStrokeStyle(2, 0xffd700, 0.6);
+      btn.setInteractive(new Phaser.Geom.Circle(0, 0, 14), Phaser.Geom.Circle.Contains);
+      const txt = this.add.text(bx, by, opt.label, {
+        fontSize: '14px', color: '#ffd700', fontFamily: 'monospace',
+        stroke: '#000', strokeThickness: 2,
+      }).setOrigin(0.5);
+      container.add([btn, txt]);
+
+      btn.on('pointerdown', () => {
+        if (this.radialTarget) {
+          this.client?.setIntersectionWaypoint(this.radialTarget.intersectionId, this.radialTarget.incomingRoadId, opt.direction);
+          // Store for arrow rendering
+          const wayData = this.game.registry.get('waypointData') as Map<string, number> || new Map();
+          wayData.set(this.radialTarget.incomingRoadId, opt.direction);
+          this.game.registry.set('waypointData', wayData);
+          this.drawRoadArrows();
+        }
+        this.hideRadialMenu();
+      });
+
+      btn.on('pointerover', () => btn.setFillStyle(0x8b6914));
+      btn.on('pointerout', () => btn.setFillStyle(0x5c4033));
+    });
+
+    // Close button (small X)
+    const closeX = 36;
+    const closeY = -36;
+    const closeBtn = this.add.circle(closeX, closeY, 10, 0x882222, 0.8);
+    closeBtn.setInteractive(new Phaser.Geom.Circle(0, 0, 10), Phaser.Geom.Circle.Contains);
+    const closeTxt = this.add.text(closeX, closeY, '✕', {
+      fontSize: '10px', color: '#fff', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    container.add([closeBtn, closeTxt]);
+    closeBtn.on('pointerdown', () => this.hideRadialMenu());
+
+    container.setDepth(100);
+    this.radialMenu = container;
+  }
+
+  private hideRadialMenu(): void {
+    if (this.radialMenu) {
+      this.radialMenu.destroy();
+      this.radialMenu = null;
+    }
+    this.radialTarget = null;
+  }
+
+  // ── Cities ────────────────────────────────────────────────
   private drawCity(city: CityData): void {
     const container = this.add.container(city.x, city.y);
     const influence = this.add.circle(0, 0, city.influenceRadius, 0x4488ff, 0.08);
     influence.setStrokeStyle(1, 0x4488ff, 0.2);
-
     const base = this.add.rectangle(0, 0, 50, 40, 0x5a5a6e, 1);
     base.setStrokeStyle(2, 0x8888aa, 1);
     const leftTower = this.add.rectangle(-18, -10, 14, 20, 0x6a6a7e, 1);
@@ -179,204 +294,225 @@ export default class GameScene extends Phaser.Scene {
     container.on('pointerdown', () => this.selectEntity('city', city.id, city.name, city));
     container.on('pointerover', () => container.setScale(1.08));
     container.on('pointerout', () => { if (this.selection.id !== city.id) container.setScale(1); });
-
     this.cities.set(city.id, { gfx: container, data: city });
   }
 
+  // ── Buildings ─────────────────────────────────────────────
   private drawBuilding(b: BuildData): void {
     if (this.buildingGfx.has(b.id)) return;
-
     const container = this.add.container(b.x, b.y);
     const colors: Record<string, number> = {
-      lumber_mill: 0x8b5e3c,
-      farm: 0x7cb342,
-      gold_mine: 0xfdd835,
-      barracks: 0x8d6e63,
-      defense_tower: 0x78909c,
+      lumber_mill: 0x8b5e3c, farm: 0x7cb342, gold_mine: 0xfdd835,
+      barracks: 0x8d6e63, defense_tower: 0x78909c,
     };
-    const iconChars: Record<string, string> = {
-      lumber_mill: '🌲',
-      farm: '🌾',
-      gold_mine: '💎',
-      barracks: '⚔️',
-      defense_tower: '🏰',
-    };
-
     const color = colors[b.type] || 0x666666;
     const rect = this.add.rectangle(0, 0, 20, 20, color, 0.9);
     rect.setStrokeStyle(1, 0xffffff, 0.5);
-    const label = this.add.text(0, 0, b.type === 'lumber_mill' ? 'W' : b.type === 'farm' ? 'F' : b.type === 'gold_mine' ? 'G' : b.type === 'barracks' ? 'B' : 'D', {
+    const char = b.type === 'lumber_mill' ? 'W' : b.type === 'farm' ? 'F' : b.type === 'gold_mine' ? 'G' : b.type === 'barracks' ? 'B' : 'D';
+    const label = this.add.text(0, 0, char, {
       fontSize: '10px', color: '#fff', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 2,
     }).setOrigin(0.5);
-
     container.add([rect, label]);
     container.setInteractive(new Phaser.Geom.Rectangle(-12, -12, 24, 24), Phaser.Geom.Rectangle.Contains);
-    container.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      p.event.stopPropagation();
-      this.selectEntity('building', b.id, b.type, b);
-    });
-
+    container.on('pointerdown', () => this.selectEntity('building', b.id, b.type, b));
     this.buildingGfx.set(b.id, container);
   }
 
-  private selectEntity(type: SelectionType, id: string, name: string, data?: any): void {
-    this.selection = { type, id, name, data };
-
-    // Update selection ring
-    if (this.selectionRing) {
-      this.selectionRing.clear();
-      if (type === 'city') {
-        const city = this.cities.get(id)?.data;
-        if (city) {
-          this.selectionRing.lineStyle(2, 0xffff00, 0.8);
-          this.selectionRing.strokeCircle(city.x, city.y, city.influenceRadius);
-          this.selectionRing.lineStyle(3, 0xffff00, 1);
-          this.selectionRing.strokeRect(city.x - 30, city.y - 30, 60, 60);
-        }
-      } else if (type === 'intersection') {
-        const is = this.intersectionGfx.get(id)?.data;
-        if (is) {
-          this.selectionRing.lineStyle(3, 0xffff00, 1);
-          this.selectionRing.strokeCircle(is.x, is.y, 22);
-        }
-      } else if (type === 'building') {
-        const b = data as BuildData;
-        if (b) {
-          this.selectionRing.lineStyle(2, 0xffff00, 1);
-          this.selectionRing.strokeRect(b.x - 14, b.y - 14, 28, 28);
-        }
-      }
+  // ── Units ─────────────────────────────────────────────────
+  private drawUnit(unit: UnitData, playerColor?: string): void {
+    if (this.unitGfx.has(unit.id)) {
+      // Update existing — just update the position data
+      const pos = this.getUnitWorldPos(unit);
+      if (pos) this.unitGfx.get(unit.id)!.setData('worldPos', pos);
+      return;
     }
 
-    // Notify React
+    const pos = this.getUnitWorldPos(unit);
+    if (!pos) return;
+
+    const container = this.add.container(pos.x, pos.y);
+    const color = TROOP_COLORS[unit.type] || 0xffffff;
+    const body = this.add.circle(0, 0, 6, color, 1);
+    body.setStrokeStyle(1, 0xffffff, 0.6);
+    const label = this.add.text(0, 0, TROOP_LABELS[unit.type] || '?', {
+      fontSize: '7px', color: '#fff', fontFamily: 'monospace',
+      stroke: '#000', strokeThickness: 2,
+    }).setOrigin(0.5);
+
+    // Health bar
+    const hpBar = this.add.rectangle(0, -9, 12, 3, 0x44cc44, 0.8);
+    container.add([body, label, hpBar]);
+    container.setData('worldPos', pos);
+    container.setData('hpBar', hpBar);
+    container.setData('maxHealth', unit.maxHealth);
+    container.setDepth(50);
+    this.unitGfx.set(unit.id, container);
+  }
+
+  private getUnitWorldPos(unit: UnitData): { x: number; y: number } | null {
+    const road = this.mapRoads.find(r => r.id === unit.roadId);
+    if (!road || road.splinePoints.length < 2) return null;
+    const pts = road.splinePoints;
+    const t = Phaser.Math.Clamp(unit.t, 0, 0.999);
+    const idx = t * (pts.length - 1);
+    const i = Math.floor(idx);
+    const frac = idx - i;
+    const p0 = pts[Math.min(i, pts.length - 1)];
+    const p1 = pts[Math.min(i + 1, pts.length - 1)];
+    return { x: p0.x + (p1.x - p0.x) * frac, y: p0.y + (p1.y - p0.y) * frac };
+  }
+
+  private removeUnit(id: string): void {
+    const existing = this.unitGfx.get(id);
+    if (existing) { existing.destroy(); this.unitGfx.delete(id); }
+  }
+
+  // ── Selection ──────────────────────────────────────────────
+  private selectEntity(type: SelectionType, id: string, name: string, data?: any): void {
+    // Hide radial menu when selecting something other than intersection
+    if (type !== 'intersection') this.hideRadialMenu();
+
+    this.selection = { type, id, name, data };
+    if (this.selectionRing) {
+      this.selectionRing.clear();
+      if (type === 'city' && data) {
+        this.selectionRing.lineStyle(2, 0xffff00, 0.8);
+        this.selectionRing.strokeCircle(data.x, data.y, data.influenceRadius);
+        this.selectionRing.lineStyle(3, 0xffff00, 1);
+        this.selectionRing.strokeRect(data.x - 30, data.y - 30, 60, 60);
+      } else if (type === 'intersection' && data) {
+        this.selectionRing.lineStyle(3, 0xffff00, 1);
+        this.selectionRing.strokeCircle(data.x, data.y, 22);
+      } else if (type === 'building' && data) {
+        this.selectionRing.lineStyle(2, 0xffff00, 1);
+        this.selectionRing.strokeRect(data.x - 14, data.y - 14, 28, 28);
+      }
+    }
     const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void);
     if (onSelection) onSelection(this.selection);
   }
 
-  private setupCameraControls(): void {
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (pointer.isDown && pointer.leftButtonDown()) {
-        this.cameras.main.scrollX -= (pointer.x - pointer.prevPosition.x) / this.cameras.main.zoom;
-        this.cameras.main.scrollY -= (pointer.y - pointer.prevPosition.y) / this.cameras.main.zoom;
-      }
-    });
-    this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _gx: number[], _gy: number[], dz: number[]) => {
-      const zoom = Phaser.Math.Clamp(this.cameras.main.zoom - dz[0] * 0.001, 0.5, 2);
-      this.cameras.main.setZoom(zoom);
-    });
-    // Deselect on background click
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      // If no interactive object was hit
-      const hits = this.input.hitTestPointer(pointer);
-      if (hits.length === 0 || (hits.length === 1 && hits[0] === this.children.list[0])) {
-        this.clearSelection();
-      }
-    });
-  }
-
   private clearSelection(): void {
+    this.hideRadialMenu();
     this.selection = { type: 'none', id: '', name: '' };
     if (this.selectionRing) this.selectionRing.clear();
     const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void);
     if (onSelection) onSelection(this.selection);
   }
 
-  // Exposed for React
+  // ── Camera ────────────────────────────────────────────────
+  private setupCameraControls(): void {
+    this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if (p.isDown && p.leftButtonDown()) {
+        this.cameras.main.scrollX -= (p.x - p.prevPosition.x) / this.cameras.main.zoom;
+        this.cameras.main.scrollY -= (p.y - p.prevPosition.y) / this.cameras.main.zoom;
+      }
+    });
+    this.input.on('wheel', (_p: any, _gx: any, _gy: any, dz: number[]) => {
+      this.cameras.main.setZoom(Phaser.Math.Clamp(this.cameras.main.zoom - dz[0] * 0.001, 0.5, 2));
+    });
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      // Only deselect if clicking on pure background (no interactive objects hit)
+      if (p.downElement === this.game.canvas) {
+        const hits = this.input.hitTestPointer(p);
+        let hitInteractive = false;
+        for (const hit of hits) {
+          if ((hit as any).input && (hit as any).input.enabled) { hitInteractive = true; break; }
+        }
+        if (!hitInteractive && p.leftButtonDown()) {
+          this.clearSelection();
+        }
+      }
+    });
+  }
+
+  // ── Exposed for React ────────────────────────────────────
   getClient(): GameClient | null { return this.client; }
   getCityBuildingCount(cityId: string): number { return this.cityBuildingCounts.get(cityId) || 0; }
 
+  // ── Network ───────────────────────────────────────────────
   private async connectToServer(): Promise<void> {
     const host = window.location.hostname;
     const port = '2567';
     this.client = new GameClient(`ws://${host}:${port}`);
-
     try {
       await this.client.connect();
-      console.log('Connected to server');
       this.client.onStateChange((state) => this.syncState(state));
-    } catch (err) {
-      console.warn('Could not connect to server. Running in offline mode.');
+    } catch (_) {
+      console.warn('Offline mode');
     }
   }
 
   private syncState(state: any): void {
-    // Sync cities
+    // Cities
     if (state.cities) {
-      state.cities.forEach((serverCity: any, id: string) => {
+      state.cities.forEach((s: any, id: string) => {
         const local = this.cities.get(id);
         if (local) {
-          local.data.ownerId = serverCity.ownerId;
-          local.data.townHallLevel = serverCity.townHallLevel;
-          local.data.influenceRadius = serverCity.influenceRadius;
-          if (serverCity.maxBuildings !== undefined) local.data.maxBuildings = serverCity.maxBuildings;
+          local.data.ownerId = s.ownerId;
+          local.data.townHallLevel = s.townHallLevel;
+          local.data.influenceRadius = s.influenceRadius;
+          if (s.maxBuildings !== undefined) local.data.maxBuildings = s.maxBuildings;
           const banner = local.gfx.getAt(5) as Phaser.GameObjects.Rectangle;
-          banner.setFillStyle(serverCity.ownerId ? 0xff4444 : 0xcccccc);
-          const levelLabel = local.gfx.getAt(7) as Phaser.GameObjects.Text;
-          levelLabel.setText(`Lv.${serverCity.townHallLevel}`);
-          const influence = local.gfx.getAt(0) as Phaser.GameObjects.Arc;
-          influence.setRadius(serverCity.influenceRadius);
+          banner.setFillStyle(s.ownerId ? 0xff4444 : 0xcccccc);
+          (local.gfx.getAt(7) as Phaser.GameObjects.Text).setText(`Lv.${s.townHallLevel}`);
+          (local.gfx.getAt(0) as Phaser.GameObjects.Arc).setRadius(s.influenceRadius);
         }
       });
     }
 
-    // Sync buildings
+    // Buildings
     this.cityBuildingCounts.clear();
     this.cities.forEach((_, cid) => this.cityBuildingCounts.set(cid, 0));
     if (state.buildings) {
       state.buildings.forEach((b: any) => {
-        this.drawBuilding({
-          id: b.id,
-          cityId: b.cityId,
-          type: b.type,
-          x: b.x,
-          y: b.y,
-          level: b.level || 1,
-        });
-        // Track count per city
-        const cur = this.cityBuildingCounts.get(b.cityId) || 0;
-        this.cityBuildingCounts.set(b.cityId, cur + 1);
+        this.drawBuilding({ id: b.id, cityId: b.cityId, type: b.type, x: b.x, y: b.y, level: b.level || 1 });
+        this.cityBuildingCounts.set(b.cityId, (this.cityBuildingCounts.get(b.cityId) || 0) + 1);
       });
+      const onBuildingsUpdate = this.game.registry.get('onBuildingsUpdate') as ((c: Map<string, number>) => void);
+      if (onBuildingsUpdate) onBuildingsUpdate(this.cityBuildingCounts);
     }
 
-    // Notify React about building counts
-    const onBuildingsUpdate = this.game.registry.get('onBuildingsUpdate') as ((c: Map<string, number>) => void);
-    if (onBuildingsUpdate) onBuildingsUpdate(this.cityBuildingCounts);
+    // Units
+    if (state.units) {
+      const syncedIds = new Set<string>();
+      state.units.forEach((u: any) => {
+        syncedIds.add(u.id);
+        // Look up player color
+        let color: string | undefined;
+        if (state.players) state.players.forEach((p: any) => { if (p.id === u.ownerId) color = p.colorHex; });
+        this.drawUnit({ id: u.id, ownerId: u.ownerId, type: u.type, roadId: u.roadId, t: u.t, health: u.health, maxHealth: u.maxHealth }, color);
+      });
+      // Remove stale units
+      this.unitGfx.forEach((_, id) => { if (!syncedIds.has(id)) this.removeUnit(id); });
+    }
 
-    // Sync player resources
+    // Players / Resources
     if (state.players) {
       const myId = this.client?.sessionId;
       if (myId) {
         const player = state.players.get(myId);
         if (player) {
           const onResourceUpdate = this.game.registry.get('onResourceUpdate') as (r: any) => void;
-          if (onResourceUpdate) {
-            onResourceUpdate({
-              wood: player.wood,
-              food: player.food,
-              gold: player.gold,
-              popUsed: player.populationUsed,
-              popCap: player.populationCap,
-            });
-          }
+          if (onResourceUpdate) onResourceUpdate({
+            wood: player.wood, food: player.food, gold: player.gold,
+            popUsed: player.populationUsed, popCap: player.populationCap,
+          });
         }
       }
-
-      // Sync player color to own city banner
-      state.players.forEach((player: any) => {
-        if (player.connectedCityId) {
-          const city = this.cities.get(player.connectedCityId);
+      state.players.forEach((p: any) => {
+        if (p.connectedCityId) {
+          const city = this.cities.get(p.connectedCityId);
           if (city) {
             const banner = city.gfx.getAt(5) as Phaser.GameObjects.Rectangle;
-            try {
-              banner.setFillStyle(Phaser.Display.Color.HexStringToColor(player.colorHex).color);
-            } catch (_) {}
+            try { banner.setFillStyle(Phaser.Display.Color.HexStringToColor(p.colorHex).color); } catch (_) {}
           }
         }
       });
     }
 
-    // Re-draw selection ring if something is selected
+    // Redraw selection ring if something selected
     if (this.selection.type !== 'none') {
       this.selectEntity(this.selection.type, this.selection.id, this.selection.name, this.selection.data);
     }

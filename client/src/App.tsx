@@ -5,6 +5,7 @@ import ResourceBar from './ui/ResourceBar';
 import Minimap from './ui/Minimap';
 import BuildMenu, { BuildOption } from './ui/BuildMenu';
 import InfoPanel from './ui/InfoPanel';
+import SpawnPanel from './ui/SpawnPanel';
 import { GameClient } from './network/GameClient';
 
 // Styles
@@ -90,6 +91,10 @@ export default function App() {
     client?.upgradeTownHall();
   }, [client]);
 
+  const handleSpawn = useCallback((type: string) => {
+    client?.spawnTroops(type);
+  }, [client]);
+
   // Determine if build menu should show (only for player-owned cities)
   const isOwnCity = selection.type === 'city' && selection.data?.ownerId && client?.sessionId
     ? selection.data.ownerId === client.sessionId
@@ -98,6 +103,9 @@ export default function App() {
 
   // Count buildings in the selected city
   const buildingCount = selection.type === 'city' ? (buildingCounts.get(selection.id) || 0) : 0;
+
+  // Spawn panel: visible when barracks is selected
+  const isBarracksSelected = selection.type === 'building' && selection.name === 'barracks';
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
@@ -116,7 +124,7 @@ export default function App() {
         <div style={TOP_RIGHT}>
           <Minimap mapWidth={mapBounds.width} mapHeight={mapBounds.height} />
         </div>
-        <div style={BOTTOM_MIDDLE}>
+        <div style={{ ...BOTTOM_MIDDLE, display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
           <BuildMenu
             visible={isOwnCity}
             cityName={selection.name}
@@ -127,6 +135,11 @@ export default function App() {
             buildings={BUILD_OPTIONS}
             onBuild={handleBuild}
             onUpgradeTownHall={handleUpgradeTownHall}
+          />
+          <SpawnPanel
+            visible={isBarracksSelected}
+            resources={resources}
+            onSpawn={handleSpawn}
           />
         </div>
         <div style={BOTTOM_LEFT}>

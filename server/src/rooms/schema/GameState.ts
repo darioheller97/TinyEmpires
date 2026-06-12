@@ -5,6 +5,7 @@ import { IntersectionNode } from './IntersectionNode';
 import { Road } from './Road';
 import { LairNode } from './LairNode';
 import { BuildingNode } from './BuildingNode';
+import { UnitNode } from './UnitNode';
 
 export class GameState extends Schema {
   @type({ map: Player })
@@ -24,6 +25,9 @@ export class GameState extends Schema {
 
   @type({ map: BuildingNode })
   buildings = new MapSchema<BuildingNode>();
+
+  @type({ map: UnitNode })
+  units = new MapSchema<UnitNode>();
 
   @type('number')
   tick: number = 0;

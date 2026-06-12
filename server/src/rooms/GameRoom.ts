@@ -5,21 +5,12 @@ import { CityNode } from './schema/CityNode';
 import { IntersectionNode, Waypoint } from './schema/IntersectionNode';
 import { Road } from './schema/Road';
 import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS, BUILDING_PRODUCTION } from './schema/BuildingNode';
+import { UnitNode, TroopType, TROOP_TYPES, TROOP_STATS } from './schema/UnitNode';
 
 const PLAYER_COLORS = ['#4488ff', '#ff4444', '#44ff44', '#ffaa00', '#ff44ff', '#44ffff'];
 
-interface HardcodedNode {
-  id: string;
-  x: number;
-  y: number;
-  name: string;
-}
-
-interface HardcodedRoad {
-  fromId: string;
-  toId: string;
-  via: { x: number; y: number }[];
-}
+interface HardcodedNode { id: string; x: number; y: number; name: string; }
+interface HardcodedRoad { fromId: string; toId: string; via: { x: number; y: number }[]; }
 
 const MAP_CITIES: HardcodedNode[] = [
   { id: 'city_a', x: 300, y: 400, name: 'Red Keep' },
@@ -50,31 +41,28 @@ function buildSplinePoints(start: { x: number; y: number }, via: { x: number; y:
   return points;
 }
 
-// Economy fires once per second (every 10 ticks at 100ms)
 const ECONOMY_INTERVAL_TICKS = 10;
 
-// Helper: get all buildings for a city
 function getBuildingsForCity(state: GameState, cityId: string): BuildingNode[] {
   const result: BuildingNode[] = [];
-  state.buildings.forEach((b) => {
-    if (b.cityId === cityId) result.push(b);
-  });
+  state.buildings.forEach((b) => { if (b.cityId === cityId) result.push(b); });
   return result;
 }
 
-// Helper: count building types for a city
 function countBuildingType(state: GameState, cityId: string, type: string): number {
   let count = 0;
-  state.buildings.forEach((b) => {
-    if (b.cityId === cityId && b.type === type) count++;
-  });
+  state.buildings.forEach((b) => { if (b.cityId === cityId && b.type === type) count++; });
   return count;
 }
 
-let buildingIdCounter = 0;
-function nextBuildingId(): string {
-  return `bld_${++buildingIdCounter}_${Date.now()}`;
+function getUnitsOnRoad(state: GameState, roadId: string): UnitNode[] {
+  const result: UnitNode[] = [];
+  state.units.forEach((u) => { if (u.roadId === roadId) result.push(u); });
+  return result;
 }
+
+let idCounter = 0;
+function nextId(prefix: string): string { return `${prefix}_${++idCounter}_${Date.now()}`; }
 
 export class GameRoom extends Room<GameState> {
   maxClients = 10;
@@ -85,7 +73,6 @@ export class GameRoom extends Room<GameState> {
     this.setState(new GameState());
     this.initMap();
     this.setMessageHandlers();
-
     this.tickInterval = setInterval(() => this.gameTick(), 100);
   }
 
@@ -95,193 +82,274 @@ export class GameRoom extends Room<GameState> {
       city.maxBuildings = 2;
       this.state.cities.set(c.id, city);
     });
-
     MAP_INTERSECTIONS.forEach((is) => {
-      const intersection = new IntersectionNode(is.id, is.x, is.y);
-      this.state.intersections.set(is.id, intersection);
+      this.state.intersections.set(is.id, new IntersectionNode(is.id, is.x, is.y));
     });
-
     MAP_ROADS.forEach((r, i) => {
       const fromNode = [...MAP_CITIES, ...MAP_INTERSECTIONS].find(n => n.id === r.fromId);
       const toNode = [...MAP_CITIES, ...MAP_INTERSECTIONS].find(n => n.id === r.toId);
       if (!fromNode || !toNode) return;
-
-      const spline = buildSplinePoints(
-        { x: fromNode.x, y: fromNode.y },
-        r.via,
-        { x: toNode.x, y: toNode.y }
-      );
-      const road = new Road(`road_${i}`, r.fromId, r.toId, spline);
-      this.state.roads.set(road.id, road);
+      const spline = buildSplinePoints({ x: fromNode.x, y: fromNode.y }, r.via, { x: toNode.x, y: toNode.y });
+      this.state.roads.set(`road_${i}`, new Road(`road_${i}`, r.fromId, r.toId, spline));
     });
   }
 
   private setMessageHandlers(): void {
-    this.onMessage('set_waypoint', (client, message: { intersectionId: string; roadId: string; direction: number }) => {
-      const intersection = this.state.intersections.get(message.intersectionId);
+    this.onMessage('set_waypoint', (client, msg: { intersectionId: string; roadId: string; direction: number }) => {
+      const intersection = this.state.intersections.get(msg.intersectionId);
       if (!intersection) return;
-      const existing = intersection.waypoints.find(wp => wp.roadId === message.roadId);
-      if (existing) {
-        existing.direction = message.direction;
-      } else {
+      const existing = intersection.waypoints.find(wp => wp.roadId === msg.roadId);
+      if (existing) { existing.direction = msg.direction; }
+      else {
         const wp = new Waypoint();
-        wp.roadId = message.roadId;
-        wp.direction = message.direction;
+        wp.roadId = msg.roadId;
+        wp.direction = msg.direction;
         intersection.waypoints.push(wp);
       }
     });
 
-    // Build a structure in the player's city
-    this.onMessage('build_structure', (client, message: { type: string }) => {
+    this.onMessage('build_structure', (client, msg: { type: string }) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || !player.connectedCityId) return;
-
-      const buildingType = message.type as BuildingType;
-      if (!BUILDING_TYPES.includes(buildingType)) return;
-
+      const bt = msg.type as BuildingType;
+      if (!BUILDING_TYPES.includes(bt)) return;
       const city = this.state.cities.get(player.connectedCityId);
       if (!city || city.ownerId !== client.sessionId) return;
-
-      // Check building slot limit
-      const existingBuildings = getBuildingsForCity(this.state, city.id);
-      if (existingBuildings.length >= city.maxBuildings) {
-        console.log(`City ${city.id} at building slot limit (${city.maxBuildings})`);
-        return;
-      }
-
-      // Check resource cost
-      const cost = BUILDING_COSTS[buildingType];
+      const existingB = getBuildingsForCity(this.state, city.id);
+      if (existingB.length >= city.maxBuildings) return;
+      const cost = BUILDING_COSTS[bt];
       if (player.wood < cost.wood || player.food < cost.food || player.gold < cost.gold) return;
-
-      // Deduct cost
-      player.wood -= cost.wood;
-      player.food -= cost.food;
-      player.gold -= cost.gold;
-
-      // Place building at a spot within influence radius
-      const bId = nextBuildingId();
-      const existingOfType = countBuildingType(this.state, city.id, buildingType);
-      // Stagger building positions radially around the city
+      player.wood -= cost.wood; player.food -= cost.food; player.gold -= cost.gold;
+      const existingOfType = countBuildingType(this.state, city.id, bt);
       const angle = (existingOfType / city.maxBuildings) * Math.PI * 2;
-      const radius = 80;
-      const bx = city.x + Math.cos(angle) * radius;
-      const by = city.y + Math.sin(angle) * radius;
-
-      const building = new BuildingNode(bId, city.id, buildingType, bx, by);
+      const bId = nextId('bld');
+      const building = new BuildingNode(bId, city.id, bt, city.x + Math.cos(angle) * 80, city.y + Math.sin(angle) * 80);
       this.state.buildings.set(bId, building);
-
-      console.log(`Player ${client.sessionId} built ${buildingType} at city ${city.id}`);
     });
 
-    // Upgrade town hall (costs gold)
     this.onMessage('upgrade_town_hall', (client) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || !player.connectedCityId) return;
-
       const city = this.state.cities.get(player.connectedCityId);
       if (!city || city.ownerId !== client.sessionId) return;
-
-      const upgradeCost = city.townHallLevel * 50;
-      if (player.gold < upgradeCost) return;
-
-      player.gold -= upgradeCost;
+      const cost = city.townHallLevel * 50;
+      if (player.gold < cost) return;
+      player.gold -= cost;
       city.townHallLevel++;
       city.influenceRadius = 150 + (city.townHallLevel - 1) * 40;
       city.maxBuildings = 2 + (city.townHallLevel - 1);
       city.maxHealth = 1000 + (city.townHallLevel - 1) * 500;
+    });
 
-      console.log(`Player ${client.sessionId} upgraded ${city.name} to level ${city.townHallLevel}`);
+    // Spawn troops — find the player's first barracks and spawn on nearby road
+    this.onMessage('spawn_troops', (client, msg: { type: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || !player.connectedCityId) return;
+      const troopType = msg.type as TroopType;
+      if (!TROOP_TYPES.includes(troopType)) return;
+
+      const city = this.state.cities.get(player.connectedCityId);
+      if (!city || city.ownerId !== client.sessionId) return;
+
+      const stats = TROOP_STATS[troopType];
+      // Check resources
+      if (player.food < stats.foodCost || player.gold < stats.goldCost) return;
+
+      // Check population
+      if (player.populationUsed + 1 > player.populationCap) return;
+
+      // Find a barracks in this city
+      const barracks = getBuildingsForCity(this.state, city.id).find(b => b.type === 'barracks');
+      if (!barracks) return;
+
+      // Deduct costs
+      player.food -= stats.foodCost;
+      player.gold -= stats.goldCost;
+      player.populationUsed += 1;
+
+      // Find outgoing road from this city
+      const roadsArray = Array.from(this.state.roads.values());
+      const targetRoad = roadsArray.find(r => r.fromId === city.id) || null;
+      if (!targetRoad) return;
+
+      const unit = new UnitNode(nextId('unit'), client.sessionId, troopType, targetRoad.id);
+      unit.originNodeId = city.id;
+      this.state.units.set(unit.id, unit);
+    });
+
+    // Radial menu: set waypoint at intersection
+    this.onMessage('set_intersection_waypoint', (client, msg: { intersectionId: string; incomingRoadId: string; direction: number }) => {
+      const intersection = this.state.intersections.get(msg.intersectionId);
+      if (!intersection) return;
+
+      // Map direction to actual outgoing road
+      const outgoingRoads: Road[] = [];
+      this.state.roads.forEach((r) => {
+        if (r.fromId === msg.intersectionId) outgoingRoads.push(r);
+      });
+
+      // Sort by angle for Left/Straight/Right mapping
+      // direction: 0 = straight, -1 = left, 1 = right
+      // For a simple 2-road intersection (one in, one out), all directions map to the only outgoing
+      let targetRoad: Road | null = null;
+      if (outgoingRoads.length === 0) return;
+      if (outgoingRoads.length === 1) {
+        targetRoad = outgoingRoads[0];
+      } else {
+        // Multiple outgoing — sort by angle relative to incoming
+        const incomingRoad: Road | undefined = undefined;
+        this.state.roads.forEach((r) => {
+          if (r.id === msg.incomingRoadId) targetRoad = outgoingRoads[0]; // simplified: pick first
+        });
+        targetRoad = outgoingRoads[0];
+      }
+
+      // Store the decision in the unit's waypoint system
+      // For now, store in intersection waypoints as { roadId: incomingRoadId, direction }
+      const existing = intersection.waypoints.find(wp => wp.roadId === msg.incomingRoadId);
+      if (existing) {
+        existing.direction = msg.direction;
+      } else {
+        const wp = new Waypoint();
+        wp.roadId = msg.incomingRoadId;
+        wp.direction = msg.direction;
+        intersection.waypoints.push(wp);
+      }
     });
   }
 
   onJoin(client: Client, options: any): void {
-    console.log(`Player ${client.sessionId} joined.`);
-
     const colorIndex = this.state.players.size % PLAYER_COLORS.length;
     const player = new Player(client.sessionId, options.name || `Player ${this.state.players.size + 1}`, PLAYER_COLORS[colorIndex]);
-
     const unowned = [...this.state.cities.values()].find(c => !c.ownerId);
-    if (unowned) {
-      unowned.ownerId = client.sessionId;
-      player.connectedCityId = unowned.id;
-    }
-
+    if (unowned) { unowned.ownerId = client.sessionId; player.connectedCityId = unowned.id; }
     this.state.players.set(client.sessionId, player);
   }
 
   onLeave(client: Client, consented: boolean): void {
-    console.log(`Player ${client.sessionId} left.`);
-
     const player = this.state.players.get(client.sessionId);
     if (player && player.connectedCityId) {
       const city = this.state.cities.get(player.connectedCityId);
-      if (city) {
-        city.ownerId = '';
-      }
+      if (city) city.ownerId = '';
     }
-
     this.state.players.delete(client.sessionId);
   }
 
-  onDispose(): void {
-    clearInterval(this.tickInterval);
-    console.log('GameRoom disposed.');
-  }
+  onDispose(): void { clearInterval(this.tickInterval); }
 
   private gameTick(): void {
     this.state.tick++;
-
-    // Economy runs every ECONOMY_INTERVAL_TICKS
-    if (this.state.tick % ECONOMY_INTERVAL_TICKS === 0) {
-      this.processEconomy();
-    }
+    if (this.state.tick % ECONOMY_INTERVAL_TICKS === 0) this.processEconomy();
+    this.moveUnits();
   }
 
   private processEconomy(): void {
-    // Track which players we've already processed (in case of multiple cities)
     const processedPlayers = new Set<string>();
-
     this.state.cities.forEach((city) => {
-      if (!city.ownerId) return;
-      if (processedPlayers.has(city.ownerId)) return;
+      if (!city.ownerId || processedPlayers.has(city.ownerId)) return;
       processedPlayers.add(city.ownerId);
-
       const player = this.state.players.get(city.ownerId);
       if (!player) return;
-
-      // Only process once per economy cycle
       if (player.lastEconomyTick >= this.state.tick) return;
       player.lastEconomyTick = this.state.tick;
 
-      // Base production from town hall
-      let woodPerTick = city.townHallLevel * 2;   // 2 per level
-      let foodPerTick = city.townHallLevel * 1;    // 1 per level
-      let goldPerTick = Math.floor(city.townHallLevel * 0.5); // 1 every 2 levels
-
-      // Add production from buildings
+      let wood = city.townHallLevel * 2;
+      let food = city.townHallLevel * 1;
+      let gold = Math.floor(city.townHallLevel * 0.5);
       const buildings = getBuildingsForCity(this.state, city.id);
       buildings.forEach((b) => {
         const prod = BUILDING_PRODUCTION[b.type as BuildingType];
-        if (prod) {
-          woodPerTick += prod.woodPerTick;
-          foodPerTick += prod.foodPerTick;
-          goldPerTick += prod.goldPerTick;
-        }
+        if (prod) { wood += prod.woodPerTick; food += prod.foodPerTick; gold += prod.goldPerTick; }
       });
-
-      // Apply production (as integers for now)
-      player.wood += woodPerTick;
-      player.food += foodPerTick;
-      player.gold += goldPerTick;
-
-      // Calculate population cap: base 10 + 5 per farm
-      const farmCount = countBuildingType(this.state, city.id, 'farm');
-      player.populationCap = 10 + farmCount * 5;
-
-      // Clamp resources (no negative)
+      player.wood += wood; player.food += food; player.gold += gold;
+      player.populationCap = 10 + countBuildingType(this.state, city.id, 'farm') * 5;
       player.wood = Math.max(0, player.wood);
       player.food = Math.max(0, player.food);
       player.gold = Math.max(0, player.gold);
     });
+  }
+
+  // ─── Unit Movement ────────────────────────────────────────────
+
+  private moveUnits(): void {
+    const toRemove: string[] = [];
+
+    this.state.units.forEach((unit) => {
+      const road = this.state.roads.get(unit.roadId);
+      if (!road) { toRemove.push(unit.id); return; }
+
+      const stats = TROOP_STATS[unit.type as TroopType];
+      if (!stats) { toRemove.push(unit.id); return; }
+
+      // Advance along road
+      unit.t += stats.speed;
+
+      if (unit.t >= 1.0) {
+        // Reached the end of the road
+        const targetNodeId = road.toId;
+        const targetNode = this.state.cities.get(targetNodeId) || this.state.intersections.get(targetNodeId);
+
+        if (!targetNode) {
+          toRemove.push(unit.id);
+          return;
+        }
+
+        // If it's a city, handle arrival (Phase 4 will have combat)
+        if (this.state.cities.has(targetNodeId)) {
+          // Unit arrived at city — attack logic in Phase 4
+          // For now, remove unit on arrival (no combat yet)
+          toRemove.push(unit.id);
+          // Refund population
+          const player = this.state.players.get(unit.ownerId);
+          if (player) player.populationUsed = Math.max(0, player.populationUsed - 1);
+          return;
+        }
+
+        // It's an intersection — find the next road
+        const nextRoad = this.findNextRoad(unit, road, targetNodeId);
+
+        if (nextRoad) {
+          unit.roadId = nextRoad.id;
+          unit.t = 0;
+          unit.originNodeId = targetNodeId;
+        } else {
+          // No outgoing road — unit removed
+          toRemove.push(unit.id);
+          const player = this.state.players.get(unit.ownerId);
+          if (player) player.populationUsed = Math.max(0, player.populationUsed - 1);
+        }
+      }
+    });
+
+    toRemove.forEach((id) => this.state.units.delete(id));
+  }
+
+  private findNextRoad(unit: UnitNode, currentRoad: Road, intersectionId: string): Road | null {
+    const outgoing: Road[] = [];
+    this.state.roads.forEach((r) => {
+      if (r.fromId === intersectionId && r.id !== currentRoad.id && r.toId !== unit.originNodeId) {
+        outgoing.push(r);
+      }
+    });
+
+    if (outgoing.length === 0) return null;
+
+    // Check waypoints from the intersection
+    const intersection = this.state.intersections.get(intersectionId);
+    if (intersection) {
+      const waypoint = intersection.waypoints.find(wp => wp.roadId === currentRoad.id);
+      if (waypoint) {
+        // direction: 0 = straight (first), -1 = left (last), 1 = right (middle if 3)
+        const idx = waypoint.direction === -1
+          ? outgoing.length - 1
+          : waypoint.direction === 1
+            ? Math.min(1, outgoing.length - 1)
+            : 0;
+        return outgoing[idx] || outgoing[0];
+      }
+    }
+
+    // Default: take the first new road
+    return outgoing[0];
   }
 }

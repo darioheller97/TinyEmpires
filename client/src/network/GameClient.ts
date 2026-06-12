@@ -37,6 +37,12 @@ export class GameClient {
     }
   }
 
+  setIntersectionWaypoint(intersectionId: string, incomingRoadId: string, direction: number): void {
+    if (this.room) {
+      this.room.send('set_intersection_waypoint', { intersectionId, incomingRoadId, direction });
+    }
+  }
+
   buildStructure(type: string): void {
     if (this.room) {
       this.room.send('build_structure', { type });
@@ -46,6 +52,12 @@ export class GameClient {
   upgradeTownHall(): void {
     if (this.room) {
       this.room.send('upgrade_town_hall', {});
+    }
+  }
+
+  spawnTroops(type: string): void {
+    if (this.room) {
+      this.room.send('spawn_troops', { type });
     }
   }
 
