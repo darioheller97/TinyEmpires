@@ -61,6 +61,12 @@ export class GameClient {
     }
   }
 
+  researchTech(techId: string): void {
+    if (this.room) {
+      this.room.send('research_tech', { techId });
+    }
+  }
+
   disconnect(): void {
     this.room?.leave();
     this.room = null;

@@ -3,8 +3,13 @@ import { Schema, type } from '@colyseus/schema';
 export const TROOP_TYPES = ['knight', 'lancer', 'archer', 'monk'] as const;
 export type TroopType = (typeof TROOP_TYPES)[number];
 
-export const RPS_CLASS: Record<TroopType, string> = {
+// PvE enemy types
+export const PVE_TYPES = ['goblin', 'spider'] as const;
+export type PveType = (typeof PVE_TYPES)[number];
+
+export const RPS_CLASS: Record<string, string> = {
   knight: 'knight', lancer: 'lancer', archer: 'archer', monk: 'monk',
+  goblin: 'goblin', spider: 'spider',
 };
 
 export const RPS_ADVANTAGE: Record<string, string> = {
@@ -16,15 +21,18 @@ export interface TroopStats {
   goldCost: number; range: number; healAmount: number;
 }
 
-export const TROOP_STATS: Record<TroopType, TroopStats> = {
-  knight:  { health: 120, speed: 0.008, attack: 15, foodCost: 20, goldCost: 5,  range: 30,  healAmount: 0 },
-  lancer:  { health: 100, speed: 0.012, attack: 12, foodCost: 15, goldCost: 0,  range: 35,  healAmount: 0 },
-  archer:  { health: 70,  speed: 0.010, attack: 10, foodCost: 15, goldCost: 5,  range: 80,  healAmount: 0 },
-  monk:    { health: 80,  speed: 0.007, attack: 3,  foodCost: 25, goldCost: 10, range: 40,  healAmount: 5 },
+export const TROOP_STATS: Record<string, TroopStats> = {
+  knight: { health: 120, speed: 0.008, attack: 15, foodCost: 20, goldCost: 5,  range: 30,  healAmount: 0 },
+  lancer: { health: 100, speed: 0.012, attack: 12, foodCost: 15, goldCost: 0,  range: 35,  healAmount: 0 },
+  archer: { health: 70,  speed: 0.010, attack: 10, foodCost: 15, goldCost: 5,  range: 80,  healAmount: 0 },
+  monk:   { health: 80,  speed: 0.007, attack: 3,  foodCost: 25, goldCost: 10, range: 40,  healAmount: 5 },
+  goblin: { health: 60,  speed: 0.012, attack: 8,  foodCost: 0,  goldCost: 0,  range: 25,  healAmount: 0 },
+  spider: { health: 80,  speed: 0.010, attack: 10, foodCost: 0,  goldCost: 0,  range: 30,  healAmount: 0 },
 };
 
-export const TROOP_NAMES: Record<TroopType, string> = {
+export const TROOP_NAMES: Record<string, string> = {
   knight: 'Knight', lancer: 'Lancer', archer: 'Archer', monk: 'Monk',
+  goblin: 'Goblin', spider: 'Spider',
 };
 
 export class UnitNode extends Schema {
@@ -40,18 +48,22 @@ export class UnitNode extends Schema {
 
   lastCombatTick: number = 0;
 
-  constructor(id: string, ownerId: string, type: TroopType, roadId: string) {
+  constructor(id: string, ownerId: string, type: string, roadId: string) {
     super();
     this.id = id;
     this.ownerId = ownerId;
     this.type = type;
     this.roadId = roadId;
     this.t = 0;
-    this.health = TROOP_STATS[type].health;
-    this.maxHealth = TROOP_STATS[type].health;
+    const stats = TROOP_STATS[type];
+    if (stats) { this.health = stats.health; this.maxHealth = stats.health; }
   }
 
   get distanceTraveled(): number {
     return this.roadsCrossed + this.t;
+  }
+
+  get isPvE(): boolean {
+    return this.ownerId === 'pve';
   }
 }

@@ -15,6 +15,9 @@ interface RoadData {
 interface BuildData {
   id: string; cityId: string; type: string; x: number; y: number; level: number;
 }
+interface LairData {
+  id: string; x: number; y: number; type: string; health: number; maxHealth: number;
+}
 interface UnitData {
   id: string; ownerId: string; type: string; roadId: string; t: number;
   health: number; maxHealth: number;
@@ -38,6 +41,7 @@ export default class GameScene extends Phaser.Scene {
   private cities: Map<string, { gfx: Phaser.GameObjects.Container; data: CityData }> = new Map();
   private intersectionGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: IntersectionData }> = new Map();
   private buildingGfx: Map<string, Phaser.GameObjects.Container> = new Map();
+  private lairGfx: Map<string, Phaser.GameObjects.Container> = new Map();
   private unitGfx: Map<string, Phaser.GameObjects.Container> = new Map();
   private client: GameClient | null = null;
   private selection: SelectionInfo = { type: 'none', id: '', name: '' };
@@ -61,11 +65,17 @@ export default class GameScene extends Phaser.Scene {
   private mapIntersections: IntersectionData[] = [
     { id: 'cross_1', x: 800, y: 400, name: "King's Cross" },
   ];
+  private mapLairs: LairData[] = [
+    { id: 'lair_spider', x: 200, y: 200, type: 'spider', health: 500, maxHealth: 500 },
+    { id: 'lair_goblin', x: 1400, y: 600, type: 'goblin', health: 500, maxHealth: 500 },
+  ];
   private mapRoads: RoadData[] = [
     { id: 'road_0', fromId: 'city_a', toId: 'cross_1', splinePoints: this.buildSplinePoints({ x: 300, y: 400 }, [{ x: 550, y: 400 }], { x: 800, y: 400 }) },
     { id: 'road_1', fromId: 'cross_1', toId: 'city_b', splinePoints: this.buildSplinePoints({ x: 800, y: 400 }, [{ x: 1050, y: 400 }], { x: 1300, y: 400 }) },
     { id: 'road_2', fromId: 'city_b', toId: 'cross_1', splinePoints: this.buildSplinePoints({ x: 1300, y: 400 }, [{ x: 1050, y: 400 }], { x: 800, y: 400 }) },
     { id: 'road_3', fromId: 'cross_1', toId: 'city_a', splinePoints: this.buildSplinePoints({ x: 800, y: 400 }, [{ x: 550, y: 400 }], { x: 300, y: 400 }) },
+    { id: 'road_4', fromId: 'lair_spider', toId: 'cross_1', splinePoints: this.buildSplinePoints({ x: 200, y: 200 }, [{ x: 500, y: 300 }], { x: 800, y: 400 }) },
+    { id: 'road_5', fromId: 'lair_goblin', toId: 'cross_1', splinePoints: this.buildSplinePoints({ x: 1400, y: 600 }, [{ x: 1100, y: 500 }], { x: 800, y: 400 }) },
   ];
 
   private buildSplinePoints(start: { x: number; y: number }, via: { x: number; y: number }[], end: { x: number; y: number }): { x: number; y: number }[] {
@@ -90,6 +100,7 @@ export default class GameScene extends Phaser.Scene {
     this.mapRoads.forEach(r => this.drawRoad(r));
     this.drawRoadArrows();
     this.mapIntersections.forEach(is => this.drawIntersection(is));
+    this.mapLairs.forEach(l => this.drawLair(l));
     this.mapCities.forEach(city => this.drawCity(city));
     this.selectionRing = this.add.graphics();
     this.roadArrowGfx = this.add.graphics();
@@ -325,6 +336,25 @@ export default class GameScene extends Phaser.Scene {
     container.setInteractive(new Phaser.Geom.Rectangle(-12, -12, 24, 24), Phaser.Geom.Rectangle.Contains);
     container.on('pointerdown', () => this.selectEntity('building', b.id, b.type, b));
     this.buildingGfx.set(b.id, container);
+  }
+
+  // ── Lairs ──────────────────────────────────────────────────
+  private drawLair(l: LairData): void {
+    if (this.lairGfx.has(l.id)) return;
+    const container = this.add.container(l.x, l.y);
+    const isSpider = l.type === 'spider';
+    // Cave/stump base
+    const base = this.add.circle(0, 0, 22, isSpider ? 0x2a2a3a : 0x3a2a1a, 1);
+    base.setStrokeStyle(2, isSpider ? 0x555577 : 0x6b4f2e, 1);
+    const inner = this.add.circle(0, 0, 14, isSpider ? 0x444466 : 0x5a3a1a, 1);
+    const icon = this.add.text(0, 0, isSpider ? '🕷' : '👺', { fontSize: '16px' }).setOrigin(0.5);
+    const label = this.add.text(0, -30, isSpider ? 'Spider Cave' : 'Goblin Stump', {
+      fontSize: '10px', color: isSpider ? '#aa88ff' : '#88cc44', fontFamily: 'monospace',
+      stroke: '#000', strokeThickness: 3,
+    }).setOrigin(0.5);
+    container.add([base, inner, icon, label]);
+    container.setDepth(50);
+    this.lairGfx.set(l.id, container);
   }
 
   // ── Units ─────────────────────────────────────────────────
