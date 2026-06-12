@@ -4,6 +4,7 @@ import { GameClient } from '../network/GameClient';
 interface CityData {
   id: string; x: number; y: number; name: string; ownerId: string;
   townHallLevel: number; influenceRadius: number; maxBuildings: number;
+  health?: number; maxHealth?: number;
 }
 interface IntersectionData {
   id: string; x: number; y: number; name: string;
@@ -47,6 +48,11 @@ export default class GameScene extends Phaser.Scene {
   private radialMenu: Phaser.GameObjects.Container | null = null;
   private radialTarget: { intersectionId: string; incomingRoadId: string; x: number; y: number } | null = null;
 
+  // Combat visual state
+  private prevUnitHealth: Map<string, number> = new Map();
+  private cityHealthBars: Map<string, Phaser.GameObjects.Graphics> = new Map();
+  private floatingTextPool: Phaser.GameObjects.Text[] = [];
+
   // Hardcoded map
   private mapCities: CityData[] = [
     { id: 'city_a', x: 300, y: 400, name: 'Red Keep', ownerId: '', townHallLevel: 1, influenceRadius: 150, maxBuildings: 2 },
@@ -58,6 +64,8 @@ export default class GameScene extends Phaser.Scene {
   private mapRoads: RoadData[] = [
     { id: 'road_0', fromId: 'city_a', toId: 'cross_1', splinePoints: this.buildSplinePoints({ x: 300, y: 400 }, [{ x: 550, y: 400 }], { x: 800, y: 400 }) },
     { id: 'road_1', fromId: 'cross_1', toId: 'city_b', splinePoints: this.buildSplinePoints({ x: 800, y: 400 }, [{ x: 1050, y: 400 }], { x: 1300, y: 400 }) },
+    { id: 'road_2', fromId: 'city_b', toId: 'cross_1', splinePoints: this.buildSplinePoints({ x: 1300, y: 400 }, [{ x: 1050, y: 400 }], { x: 800, y: 400 }) },
+    { id: 'road_3', fromId: 'cross_1', toId: 'city_a', splinePoints: this.buildSplinePoints({ x: 800, y: 400 }, [{ x: 550, y: 400 }], { x: 300, y: 400 }) },
   ];
 
   private buildSplinePoints(start: { x: number; y: number }, via: { x: number; y: number }[], end: { x: number; y: number }): { x: number; y: number }[] {
@@ -321,10 +329,17 @@ export default class GameScene extends Phaser.Scene {
 
   // ── Units ─────────────────────────────────────────────────
   private drawUnit(unit: UnitData, playerColor?: string): void {
-    if (this.unitGfx.has(unit.id)) {
-      // Update existing — just update the position data
+    const existing = this.unitGfx.get(unit.id);
+    if (existing) {
       const pos = this.getUnitWorldPos(unit);
-      if (pos) this.unitGfx.get(unit.id)!.setData('worldPos', pos);
+      if (pos) existing.setData('worldPos', pos);
+      // Update health bar
+      const hpBar = existing.getData('hpBar') as Phaser.GameObjects.Rectangle;
+      const maxHp = unit.maxHealth || 100;
+      const ratio = unit.health / maxHp;
+      hpBar.setScale(ratio, 1);
+      hpBar.setFillStyle(ratio > 0.5 ? 0x44cc44 : ratio > 0.25 ? 0xcccc44 : 0xcc4444);
+      hpBar.setVisible(unit.health < unit.maxHealth);
       return;
     }
 
@@ -340,8 +355,9 @@ export default class GameScene extends Phaser.Scene {
       stroke: '#000', strokeThickness: 2,
     }).setOrigin(0.5);
 
-    // Health bar
+    // Health bar — only visible when damaged
     const hpBar = this.add.rectangle(0, -9, 12, 3, 0x44cc44, 0.8);
+    hpBar.setVisible(false);
     container.add([body, label, hpBar]);
     container.setData('worldPos', pos);
     container.setData('hpBar', hpBar);
@@ -366,6 +382,54 @@ export default class GameScene extends Phaser.Scene {
   private removeUnit(id: string): void {
     const existing = this.unitGfx.get(id);
     if (existing) { existing.destroy(); this.unitGfx.delete(id); }
+  }
+
+  private showFloatingDamage(x: number, y: number, amount: number, color: string = '#ff4444'): void {
+    const txt = this.add.text(x, y - 10, `-${amount}`, {
+      fontSize: '11px', color, fontFamily: 'monospace',
+      stroke: '#000', strokeThickness: 3,
+      fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(200);
+
+    this.tweens.add({
+      targets: txt,
+      y: y - 40,
+      alpha: 0,
+      duration: 800,
+      ease: 'Power2',
+      onComplete: () => txt.destroy(),
+    });
+  }
+
+  private updateCityHealthBar(cityData: CityData): void {
+    const cityId = cityData.id;
+    let bar = this.cityHealthBars.get(cityId);
+
+    const hp = cityData.health ?? cityData.maxHealth ?? 1000;
+    const maxHp = cityData.maxHealth ?? 1000;
+    // Only show when city is damaged
+    if (hp >= maxHp) {
+      if (bar) { bar.destroy(); this.cityHealthBars.delete(cityId); }
+      return;
+    }
+
+    if (!bar) {
+      bar = this.add.graphics();
+      this.cityHealthBars.set(cityId, bar);
+    }
+
+    const barWidth = 50;
+    const barHeight = 5;
+    const x = cityData.x - barWidth / 2;
+    const y = cityData.y + 48;
+    const ratio = hp / maxHp;
+
+    bar.clear();
+    bar.fillStyle(0x000000, 0.6);
+    bar.fillRect(x - 1, y - 1, barWidth + 2, barHeight + 2);
+    bar.fillStyle(ratio > 0.5 ? 0x44cc44 : ratio > 0.25 ? 0xcccc44 : 0xcc4444, 1);
+    bar.fillRect(x, y, barWidth * ratio, barHeight);
+    bar.setDepth(45);
   }
 
   // ── Selection ──────────────────────────────────────────────
@@ -450,14 +514,27 @@ export default class GameScene extends Phaser.Scene {
       state.cities.forEach((s: any, id: string) => {
         const local = this.cities.get(id);
         if (local) {
+          const prevHealth = (local.data.health ?? s.maxHealth ?? 1000) as number;
           local.data.ownerId = s.ownerId;
           local.data.townHallLevel = s.townHallLevel;
           local.data.influenceRadius = s.influenceRadius;
+          local.data.health = s.health || s.maxHealth;
+          local.data.maxHealth = s.maxHealth;
           if (s.maxBuildings !== undefined) local.data.maxBuildings = s.maxBuildings;
+
+          // Floating damage for city
+          const currentHp = local.data.health ?? prevHealth;
+          if (prevHealth > 0 && currentHp < prevHealth) {
+            this.showFloatingDamage(local.data.x, local.data.y, prevHealth - currentHp, '#ff8800');
+          }
+
           const banner = local.gfx.getAt(5) as Phaser.GameObjects.Rectangle;
           banner.setFillStyle(s.ownerId ? 0xff4444 : 0xcccccc);
           (local.gfx.getAt(7) as Phaser.GameObjects.Text).setText(`Lv.${s.townHallLevel}`);
           (local.gfx.getAt(0) as Phaser.GameObjects.Arc).setRadius(s.influenceRadius);
+
+          // City health bar
+          this.updateCityHealthBar(local.data);
         }
       });
     }
@@ -479,12 +556,20 @@ export default class GameScene extends Phaser.Scene {
       const syncedIds = new Set<string>();
       state.units.forEach((u: any) => {
         syncedIds.add(u.id);
-        // Look up player color
+        // Detect damage for floating numbers
+        const prevHp = this.prevUnitHealth.get(u.id) ?? u.maxHealth;
+        if (prevHp > 0 && u.health < prevHp) {
+          const pos = this.getUnitWorldPos({ id: u.id, ownerId: u.ownerId, type: u.type, roadId: u.roadId, t: u.t, health: u.health, maxHealth: u.maxHealth });
+          if (pos) this.showFloatingDamage(pos.x, pos.y, prevHp - u.health);
+        }
+        this.prevUnitHealth.set(u.id, u.health);
         let color: string | undefined;
         if (state.players) state.players.forEach((p: any) => { if (p.id === u.ownerId) color = p.colorHex; });
         this.drawUnit({ id: u.id, ownerId: u.ownerId, type: u.type, roadId: u.roadId, t: u.t, health: u.health, maxHealth: u.maxHealth }, color);
       });
-      // Remove stale units
+      // Clean up stale health tracking
+      this.prevUnitHealth.forEach((_, id) => { if (!syncedIds.has(id)) this.prevUnitHealth.delete(id); });
+      // Remove stale unit graphics
       this.unitGfx.forEach((_, id) => { if (!syncedIds.has(id)) this.removeUnit(id); });
     }
 

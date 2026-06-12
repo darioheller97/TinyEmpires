@@ -3,29 +3,17 @@ import { Schema, type } from '@colyseus/schema';
 export const TROOP_TYPES = ['knight', 'lancer', 'archer', 'monk'] as const;
 export type TroopType = (typeof TROOP_TYPES)[number];
 
-// RPS classification
 export const RPS_CLASS: Record<TroopType, string> = {
-  knight: 'knight',
-  lancer: 'lancer',
-  archer: 'archer',
-  monk: 'monk',
+  knight: 'knight', lancer: 'lancer', archer: 'archer', monk: 'monk',
 };
 
-// RPS advantage: attacker → defender
 export const RPS_ADVANTAGE: Record<string, string> = {
-  knight: 'archer',   // knights are strong against archers
-  lancer: 'knight',   // lancers are strong against knights
-  archer: 'lancer',   // archers are strong against lancers
+  knight: 'archer', lancer: 'knight', archer: 'lancer',
 };
 
 export interface TroopStats {
-  health: number;
-  speed: number;      // t-increment per tick on the road
-  attack: number;
-  foodCost: number;
-  goldCost: number;
-  range: number;      // for archers
-  healAmount: number; // for monks
+  health: number; speed: number; attack: number; foodCost: number;
+  goldCost: number; range: number; healAmount: number;
 }
 
 export const TROOP_STATS: Record<TroopType, TroopStats> = {
@@ -36,38 +24,21 @@ export const TROOP_STATS: Record<TroopType, TroopStats> = {
 };
 
 export const TROOP_NAMES: Record<TroopType, string> = {
-  knight: 'Knight',
-  lancer: 'Lancer',
-  archer: 'Archer',
-  monk: 'Monk',
+  knight: 'Knight', lancer: 'Lancer', archer: 'Archer', monk: 'Monk',
 };
 
 export class UnitNode extends Schema {
-  @type('string')
-  id: string = '';
+  @type('string') id: string = '';
+  @type('string') ownerId: string = '';
+  @type('string') type: string = 'knight';
+  @type('string') roadId: string = '';
+  @type('number') t: number = 0;
+  @type('number') health: number = 100;
+  @type('number') maxHealth: number = 100;
+  @type('string') originNodeId: string = '';
+  @type('number') roadsCrossed: number = 0;
 
-  @type('string')
-  ownerId: string = '';
-
-  @type('string')
-  type: string = 'knight';
-
-  @type('string')
-  roadId: string = '';
-
-  // Position along the road spline, 0 = fromId, 1 = toId
-  @type('number')
-  t: number = 0;
-
-  @type('number')
-  health: number = 100;
-
-  @type('number')
-  maxHealth: number = 100;
-
-  // The node we came from (prevents U-turns)
-  @type('string')
-  originNodeId: string = '';
+  lastCombatTick: number = 0;
 
   constructor(id: string, ownerId: string, type: TroopType, roadId: string) {
     super();
@@ -78,5 +49,9 @@ export class UnitNode extends Schema {
     this.t = 0;
     this.health = TROOP_STATS[type].health;
     this.maxHealth = TROOP_STATS[type].health;
+  }
+
+  get distanceTraveled(): number {
+    return this.roadsCrossed + this.t;
   }
 }
