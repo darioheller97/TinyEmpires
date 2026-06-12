@@ -7,11 +7,6 @@ export type TroopType = (typeof TROOP_TYPES)[number];
 export const PVE_TYPES = ['goblin', 'spider'] as const;
 export type PveType = (typeof PVE_TYPES)[number];
 
-export const RPS_CLASS: Record<string, string> = {
-  knight: 'knight', lancer: 'lancer', archer: 'archer', monk: 'monk',
-  goblin: 'goblin', spider: 'spider',
-};
-
 export const RPS_ADVANTAGE: Record<string, string> = {
   knight: 'archer', lancer: 'knight', archer: 'lancer',
 };
@@ -35,6 +30,8 @@ export const TROOP_NAMES: Record<string, string> = {
   goblin: 'Goblin', spider: 'Spider',
 };
 
+export type UnitStatus = 'marching' | 'fighting' | 'sieging' | 'defending';
+
 export class UnitNode extends Schema {
   @type('string') id: string = '';
   @type('string') ownerId: string = '';
@@ -45,8 +42,14 @@ export class UnitNode extends Schema {
   @type('number') maxHealth: number = 100;
   @type('string') originNodeId: string = '';
   @type('number') roadsCrossed: number = 0;
+  // marching | fighting | sieging | defending — drives client animation
+  @type('string') status: string = 'marching';
+  // Node id a sieging/defending unit is parked at ('' while on the road)
+  @type('string') atNodeId: string = '';
 
   lastCombatTick: number = 0;
+  // PvE units head for this city
+  targetNodeId: string = '';
 
   constructor(id: string, ownerId: string, type: string, roadId: string) {
     super();

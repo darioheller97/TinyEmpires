@@ -1,12 +1,13 @@
 import React from 'react';
+import { MinimapData } from '../game/GameScene';
 
 interface Props {
-  mapWidth: number;
-  mapHeight: number;
+  data: MinimapData | null;
+  onNavigate: (x: number, y: number) => void;
 }
 
 const MINIMAP_W = 180;
-const MINIMAP_H = 180;
+const MINIMAP_H = 110;
 
 const CONTAINER: React.CSSProperties = {
   width: MINIMAP_W,
@@ -16,6 +17,7 @@ const CONTAINER: React.CSSProperties = {
   borderRadius: '6px',
   overflow: 'hidden',
   position: 'relative',
+  cursor: 'pointer',
 };
 
 const CANVAS_STYLE: React.CSSProperties = {
@@ -24,55 +26,54 @@ const CANVAS_STYLE: React.CSSProperties = {
   imageRendering: 'pixelated',
 };
 
-export default function Minimap({ mapWidth, mapHeight }: Props) {
+export default function Minimap({ data, onNavigate }: Props) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const scaleX = MINIMAP_W / mapWidth;
-    const scaleY = MINIMAP_H / mapHeight;
-
-    ctx.clearRect(0, 0, MINIMAP_W, MINIMAP_H);
-
-    // Background
     ctx.fillStyle = '#1a3a14';
     ctx.fillRect(0, 0, MINIMAP_W, MINIMAP_H);
+    if (!data) return;
 
-    // City A
-    ctx.fillStyle = '#4488ff';
-    ctx.fillRect(300 * scaleX - 3, 400 * scaleY - 3, 6, 6);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '6px monospace';
-    ctx.fillText('A', 300 * scaleX + 4, 400 * scaleY + 3);
+    const scaleX = MINIMAP_W / data.width;
+    const scaleY = MINIMAP_H / data.height;
 
-    // City B
-    ctx.fillStyle = '#ff4444';
-    ctx.fillRect(1300 * scaleX - 3, 400 * scaleY - 3, 6, 6);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '6px monospace';
-    ctx.fillText('B', 1300 * scaleX + 4, 400 * scaleY + 3);
-
-    // Intersection
-    ctx.fillStyle = '#ffd700';
-    ctx.fillRect(800 * scaleX - 2, 400 * scaleY - 2, 4, 4);
-
-    // Roads
     ctx.strokeStyle = '#8b6f47';
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(300 * scaleX, 400 * scaleY);
-    ctx.lineTo(800 * scaleX, 400 * scaleY);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(800 * scaleX, 400 * scaleY);
-    ctx.lineTo(1300 * scaleX, 400 * scaleY);
-    ctx.stroke();
-  }, [mapWidth, mapHeight]);
+    data.roads.forEach(r => {
+      ctx.beginPath();
+      ctx.moveTo(r.x1 * scaleX, r.y1 * scaleY);
+      ctx.lineTo(r.x2 * scaleX, r.y2 * scaleY);
+      ctx.stroke();
+    });
+
+    data.lairs.forEach(l => {
+      ctx.fillStyle = l.alive ? (l.type === 'spider' ? '#aa88ff' : '#88cc44') : '#444444';
+      ctx.beginPath();
+      ctx.arc(l.x * scaleX, l.y * scaleY, 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    data.cities.forEach(c => {
+      ctx.fillStyle = c.color;
+      ctx.fillRect(c.x * scaleX - 3, c.y * scaleY - 3, 6, 6);
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(c.x * scaleX - 3, c.y * scaleY - 3, 6, 6);
+    });
+  }, [data]);
+
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!data) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width;
+    const my = (e.clientY - rect.top) / rect.height;
+    onNavigate(mx * data.width, my * data.height);
+  };
 
   return (
     <div style={CONTAINER}>
@@ -81,6 +82,7 @@ export default function Minimap({ mapWidth, mapHeight }: Props) {
         width={MINIMAP_W}
         height={MINIMAP_H}
         style={CANVAS_STYLE}
+        onClick={handleClick}
       />
     </div>
   );

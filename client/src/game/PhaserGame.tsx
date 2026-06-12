@@ -1,17 +1,18 @@
 import React, { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
-import GameScene, { SelectionInfo } from './GameScene';
-import { GameClient } from '../network/GameClient';
+import GameScene, { SelectionInfo, MinimapData } from './GameScene';
 
 interface Props {
   onResourceUpdate: (resources: { wood: number; food: number; gold: number; popUsed: number; popCap: number }) => void;
   onMapBounds: (bounds: { width: number; height: number }) => void;
   onSelectionChange: (selection: SelectionInfo) => void;
   onBuildingsUpdate?: (counts: Map<string, number>) => void;
-  onSceneReady?: (getClient: () => GameClient | null) => void;
+  onTechsUpdate?: (techs: string[]) => void;
+  onMinimapData?: (data: MinimapData) => void;
+  onSceneReady?: (scene: GameScene) => void;
 }
 
-export default function PhaserGame({ onResourceUpdate, onMapBounds, onSelectionChange, onBuildingsUpdate, onSceneReady }: Props) {
+export default function PhaserGame({ onResourceUpdate, onMapBounds, onSelectionChange, onBuildingsUpdate, onTechsUpdate, onMinimapData, onSceneReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
 
@@ -23,13 +24,6 @@ export default function PhaserGame({ onResourceUpdate, onMapBounds, onSelectionC
         height: window.innerHeight,
         parent: containerRef.current,
         backgroundColor: '#2d5a27',
-        physics: {
-          default: 'arcade',
-          arcade: {
-            gravity: { x: 0, y: 0 },
-            debug: false,
-          },
-        },
         scene: [GameScene],
         scale: {
           mode: Phaser.Scale.RESIZE,
@@ -44,13 +38,12 @@ export default function PhaserGame({ onResourceUpdate, onMapBounds, onSelectionC
       game.registry.set('onMapBounds', onMapBounds);
       game.registry.set('onSelectionChange', onSelectionChange);
       if (onBuildingsUpdate) game.registry.set('onBuildingsUpdate', onBuildingsUpdate);
+      if (onTechsUpdate) game.registry.set('onTechsUpdate', onTechsUpdate);
+      if (onMinimapData) game.registry.set('onMinimapData', onMinimapData);
 
-      // Expose scene getClient when game is ready
       game.events.on('ready', () => {
         const scene = game.scene.getScene('GameScene') as GameScene;
-        if (scene && onSceneReady) {
-          onSceneReady(() => scene.getClient());
-        }
+        if (scene && onSceneReady) onSceneReady(scene);
       });
     }
 

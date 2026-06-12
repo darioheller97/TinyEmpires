@@ -1,11 +1,26 @@
 import * as Colyseus from 'colyseus.js';
 
+/**
+ * Resolve the WebSocket endpoint:
+ * - VITE_WS_URL env override wins
+ * - dev: Vite serves the page on :3000, Colyseus runs on :2567
+ * - prod: server serves the client, so connect back to the same origin
+ *   (wss when the page is https, e.g. behind the TinyEmpires.icetea.me proxy)
+ */
+export function resolveWsUrl(): string {
+  const override = import.meta.env.VITE_WS_URL as string | undefined;
+  if (override) return override;
+  if (import.meta.env.DEV) return `ws://${window.location.hostname}:2567`;
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${window.location.host}`;
+}
+
 export class GameClient {
   private client: Colyseus.Client;
   private room: Colyseus.Room | null = null;
   private onStateChangeCb: ((state: any) => void) | null = null;
 
-  constructor(wsUrl: string) {
+  constructor(wsUrl: string = resolveWsUrl()) {
     this.client = new Colyseus.Client(wsUrl);
   }
 
@@ -31,40 +46,28 @@ export class GameClient {
     this.onStateChangeCb = cb;
   }
 
-  setWaypoint(intersectionId: string, roadId: string, direction: number): void {
-    if (this.room) {
-      this.room.send('set_waypoint', { intersectionId, roadId, direction });
-    }
+  setRoute(intersectionId: string, targetRoadId: string): void {
+    this.room?.send('set_route', { intersectionId, targetRoadId });
   }
 
-  setIntersectionWaypoint(intersectionId: string, incomingRoadId: string, direction: number): void {
-    if (this.room) {
-      this.room.send('set_intersection_waypoint', { intersectionId, incomingRoadId, direction });
-    }
+  buildStructure(cityId: string, type: string): void {
+    this.room?.send('build_structure', { cityId, type });
   }
 
-  buildStructure(type: string): void {
-    if (this.room) {
-      this.room.send('build_structure', { type });
-    }
+  upgradeTownHall(cityId: string): void {
+    this.room?.send('upgrade_town_hall', { cityId });
   }
 
-  upgradeTownHall(): void {
-    if (this.room) {
-      this.room.send('upgrade_town_hall', {});
-    }
+  spawnTroops(cityId: string, type: string): void {
+    this.room?.send('spawn_troops', { cityId, type });
   }
 
-  spawnTroops(type: string): void {
-    if (this.room) {
-      this.room.send('spawn_troops', { type });
-    }
+  setAutoProduce(buildingId: string, troopType: string): void {
+    this.room?.send('set_auto_produce', { buildingId, troopType });
   }
 
   researchTech(techId: string): void {
-    if (this.room) {
-      this.room.send('research_tech', { techId });
-    }
+    this.room?.send('research_tech', { techId });
   }
 
   disconnect(): void {

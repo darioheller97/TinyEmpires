@@ -14,7 +14,10 @@
     "declarationMap": true,
     "sourceMap": true,
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true
+    "emitDecoratorMetadata": true,
+    // Required for @colyseus/schema: instance fields must assign through the
+    // prototype accessors the @type decorator installs, not shadow them.
+    "useDefineForClassFields": false
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]

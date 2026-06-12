@@ -1,0 +1,58 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          cd server && npm ci
+          cd ../client && npm ci
+
+      - name: Build server + client
+        run: |
+          cd server && npm run build
+          cd ../client && npm run build
+
+      - name: Smoke test (game logic)
+        run: |
+          node server/dist/index.js &
+          SERVER_PID=$!
+          sleep 3
+          node client/scripts/smoke-test-pvp.mjs ws://localhost:2567
+          kill $SERVER_PID
+
+  # Deploys to the host behind TinyEmpires.icetea.me over SSH.
+  # Requires repo secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PATH
+  # (DEPLOY_PATH = checkout directory on the server containing docker-compose.yml)
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+    steps:
+      - name: Deploy over SSH
+        if: env.DEPLOY_HOST != ''
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd ${{ secrets.DEPLOY_PATH }}
+            git pull --ff-only
+            docker compose up -d --build
+      - name: Skipped (no deploy secrets)
+        if: env.DEPLOY_HOST == ''
+        run: echo "DEPLOY_HOST secret not set — skipping deployment."

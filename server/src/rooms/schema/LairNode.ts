@@ -12,7 +12,10 @@ export class LairNode extends Schema {
   lastSpawnTick: number = 0;
   spawnIntervalTicks: number = 150; // 15 seconds at 10Hz
 
-  // Which road from the lair to the rest of the network
+  // When destroyed, the lair regrows after this tick
+  respawnAtTick: number = 0;
+
+  // Which road leads from the lair into the network
   roadId: string = '';
 
   constructor(id: string, x: number, y: number, type: string) {

@@ -52,6 +52,12 @@ export class BuildingNode extends Schema {
   @type('number')
   maxHealth: number = 200;
 
+  // Barracks only: troop type to auto-produce ('' = off)
+  @type('string')
+  autoProduceType: string = '';
+
+  lastAutoProduceTick: number = 0;
+
   constructor(id: string, cityId: string, type: BuildingType, x: number, y: number) {
     super();
     this.id = id;

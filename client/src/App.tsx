@@ -1,13 +1,12 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import PhaserGame from './game/PhaserGame';
-import { SelectionInfo } from './game/GameScene';
+import GameScene, { SelectionInfo, MinimapData } from './game/GameScene';
 import ResourceBar from './ui/ResourceBar';
 import Minimap from './ui/Minimap';
 import BuildMenu, { BuildOption } from './ui/BuildMenu';
 import InfoPanel from './ui/InfoPanel';
 import SpawnPanel from './ui/SpawnPanel';
 import TechTreeModal, { TechOption } from './ui/TechTreeModal';
-import { GameClient } from './network/GameClient';
 
 // Styles
 const HUD_WRAPPER: React.CSSProperties = {
@@ -17,7 +16,7 @@ const TOP_MIDDLE: React.CSSProperties = {
   position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', pointerEvents: 'auto',
 };
 const TOP_RIGHT: React.CSSProperties = {
-  position: 'absolute', top: 12, right: 12, width: 180, height: 180, pointerEvents: 'auto',
+  position: 'absolute', top: 12, right: 12, pointerEvents: 'auto',
 };
 const TOP_LEFT: React.CSSProperties = {
   position: 'absolute', top: 12, left: 12, pointerEvents: 'auto',
@@ -57,38 +56,47 @@ const TECH_OPTIONS: TechOption[] = [
 
 export default function App() {
   const [resources, setResources] = useState({ wood: 100, food: 50, gold: 20, popUsed: 0, popCap: 10 });
-  const [mapBounds, setMapBounds] = useState({ width: 1600, height: 800 });
   const [selection, setSelection] = useState<SelectionInfo>({ type: 'none', id: '', name: '' });
   const [buildingCounts, setBuildingCounts] = useState<Map<string, number>>(new Map());
-  const [client, setClient] = useState<GameClient | null>(null);
   const [techTreeVisible, setTechTreeVisible] = useState(false);
   const [researchedTechs, setResearchedTechs] = useState<string[]>([]);
+  const [minimapData, setMinimapData] = useState<MinimapData | null>(null);
+  const sceneRef = useRef<GameScene | null>(null);
 
   const handleResourceUpdate = useCallback((r: typeof resources) => setResources(r), []);
   const handleSelectionChange = useCallback((s: SelectionInfo) => setSelection(s), []);
   const handleBuildingsUpdate = useCallback((counts: Map<string, number>) => setBuildingCounts(counts), []);
+  const handleTechsUpdate = useCallback((techs: string[]) => setResearchedTechs(techs), []);
+  const handleMinimapData = useCallback((d: MinimapData) => setMinimapData(d), []);
+  const handleSceneReady = useCallback((scene: GameScene) => { sceneRef.current = scene; }, []);
+  const handleMapBounds = useCallback(() => {}, []);
 
-  const handleSceneReady = useCallback((getClient: () => GameClient | null) => {
-    const check = () => { const c = getClient(); if (c) setClient(c); else setTimeout(check, 500); };
-    check();
+  const client = () => sceneRef.current?.getClient() ?? null;
+
+  const handleBuild = useCallback((type: string) => {
+    if (selection.type === 'city') client()?.buildStructure(selection.id, type);
+  }, [selection]);
+  const handleUpgradeTownHall = useCallback(() => {
+    if (selection.type === 'city') client()?.upgradeTownHall(selection.id);
+  }, [selection]);
+  const handleSpawn = useCallback((type: string) => {
+    if (selection.type === 'building' && selection.data?.cityId) {
+      client()?.spawnTroops(selection.data.cityId, type);
+    }
+  }, [selection]);
+  const handleSetAutoProduce = useCallback((troopType: string) => {
+    if (selection.type === 'building') client()?.setAutoProduce(selection.id, troopType);
+  }, [selection]);
+  const handleResearch = useCallback((techId: string) => {
+    client()?.researchTech(techId);
+  }, []);
+  const handleNavigate = useCallback((x: number, y: number) => {
+    sceneRef.current?.centerCamera(x, y);
   }, []);
 
-  // Expose researched techs from the Phaser scene's registry
-  const handleResearchedUpdate = useCallback((techs: string[]) => setResearchedTechs(techs), []);
-
-  const handleBuild = useCallback((type: string) => client?.buildStructure(type), [client]);
-  const handleUpgradeTownHall = useCallback(() => client?.upgradeTownHall(), [client]);
-  const handleSpawn = useCallback((type: string) => client?.spawnTroops(type), [client]);
-  const handleResearch = useCallback((techId: string) => {
-    client?.researchTech(techId);
-    // Optimistic update
-    if (!researchedTechs.includes(techId)) {
-      setResearchedTechs(prev => [...prev, techId]);
-    }
-  }, [client, researchedTechs]);
-
-  const isOwnCity = selection.type === 'city' && selection.data?.ownerId && client?.sessionId
-    ? selection.data.ownerId === client.sessionId : false;
+  const mySessionId = client()?.sessionId ?? null;
+  const isOwnCity = selection.type === 'city' && !!selection.data?.ownerId && !!mySessionId
+    && selection.data.ownerId === mySessionId;
   const selectionData = selection.data || {};
   const buildingCount = selection.type === 'city' ? (buildingCounts.get(selection.id) || 0) : 0;
   const isBarracksSelected = selection.type === 'building' && selection.name === 'barracks';
@@ -97,9 +105,11 @@ export default function App() {
     <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
       <PhaserGame
         onResourceUpdate={handleResourceUpdate}
-        onMapBounds={setMapBounds}
+        onMapBounds={handleMapBounds}
         onSelectionChange={handleSelectionChange}
         onBuildingsUpdate={handleBuildingsUpdate}
+        onTechsUpdate={handleTechsUpdate}
+        onMinimapData={handleMinimapData}
         onSceneReady={handleSceneReady}
       />
 
@@ -113,7 +123,7 @@ export default function App() {
           </button>
         </div>
         <div style={TOP_RIGHT}>
-          <Minimap mapWidth={mapBounds.width} mapHeight={mapBounds.height} />
+          <Minimap data={minimapData} onNavigate={handleNavigate} />
         </div>
         <div style={{ ...BOTTOM_MIDDLE, display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
           <BuildMenu
@@ -130,7 +140,9 @@ export default function App() {
           <SpawnPanel
             visible={isBarracksSelected}
             resources={resources}
+            autoProduceType={isBarracksSelected ? (selectionData.autoProduceType || '') : ''}
             onSpawn={handleSpawn}
+            onSetAutoProduce={handleSetAutoProduce}
           />
         </div>
         <div style={BOTTOM_LEFT}>

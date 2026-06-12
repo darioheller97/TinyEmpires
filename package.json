@@ -8,7 +8,8 @@
     "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npm run dev",
     "build": "cd server && npm run build && cd ../client && npm run build",
-    "start": "cd server && npm start"
+    "start": "cd server && npm start",
+    "test:smoke": "node client/scripts/smoke-test.mjs && node client/scripts/smoke-test-pvp.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

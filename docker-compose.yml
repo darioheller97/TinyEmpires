@@ -1,0 +1,8 @@
+services:
+  tinyempires:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "2567:2567"
+    environment:
+      - PORT=2567

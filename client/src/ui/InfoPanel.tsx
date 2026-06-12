@@ -86,7 +86,8 @@ export default function InfoPanel({ selection }: Props) {
 
       {selection.data && selection.type === 'intersection' && (
         <div style={{ color: '#888', fontSize: '10px', marginTop: '4px' }}>
-          Click to set waypoints (coming in Phase 3)
+          Pick a destination on the radial menu — your troops passing
+          through will march that way.
         </div>
       )}
     </div>

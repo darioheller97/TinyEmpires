@@ -1,11 +1,14 @@
 import { Schema, type, ArraySchema } from '@colyseus/schema';
 
+// One route preference per player per intersection: "when my units pass
+// through, send them down targetRoadId". Per-player so enemies can't
+// grief each other's routing.
 export class Waypoint extends Schema {
   @type('string')
-  roadId: string = '';
+  ownerId: string = '';
 
-  @type('number')
-  direction: number = 0; // 0 = straight, -1 = left, 1 = right
+  @type('string')
+  targetRoadId: string = '';
 }
 
 export class IntersectionNode extends Schema {
@@ -24,10 +27,11 @@ export class IntersectionNode extends Schema {
   @type({ array: Waypoint })
   waypoints = new ArraySchema<Waypoint>();
 
-  constructor(id: string, x: number, y: number) {
+  constructor(id: string, x: number, y: number, name: string = 'Crossroads') {
     super();
     this.id = id;
     this.x = x;
     this.y = y;
+    this.name = name;
   }
 }
