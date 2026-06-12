@@ -7,6 +7,7 @@ import BuildMenu, { BuildOption } from './ui/BuildMenu';
 import InfoPanel from './ui/InfoPanel';
 import SpawnPanel from './ui/SpawnPanel';
 import TechTreeModal, { TechOption } from './ui/TechTreeModal';
+import { BUTTON as SKIN_BUTTON } from './ui/skin';
 
 // Styles
 const HUD_WRAPPER: React.CSSProperties = {
@@ -29,9 +30,8 @@ const BOTTOM_LEFT: React.CSSProperties = {
 };
 
 const TECH_BTN: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.7)', border: '2px solid #8b6914', borderRadius: '6px',
-  color: '#ffd700', padding: '6px 10px', cursor: 'pointer', fontFamily: 'monospace',
-  fontSize: '11px',
+  ...SKIN_BUTTON,
+  fontSize: '13px',
 };
 
 const BUILD_OPTIONS: BuildOption[] = [

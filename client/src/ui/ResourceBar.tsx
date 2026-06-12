@@ -1,4 +1,5 @@
 import React from 'react';
+import { PANEL, ICONS, RES_ICON } from './skin';
 
 interface Props {
   resources: {
@@ -11,15 +12,12 @@ interface Props {
 }
 
 const BAR_STYLE: React.CSSProperties = {
+  ...PANEL,
   display: 'flex',
-  gap: '8px',
-  background: 'rgba(0, 0, 0, 0.7)',
-  border: '2px solid #8b6914',
-  borderRadius: '8px',
-  padding: '8px 16px',
-  fontFamily: 'monospace',
-  fontSize: '14px',
-  color: '#ffd700',
+  gap: '14px',
+  alignItems: 'center',
+  padding: '0 8px',
+  fontSize: '15px',
 };
 
 const ITEM_STYLE: React.CSSProperties = {
@@ -28,32 +26,21 @@ const ITEM_STYLE: React.CSSProperties = {
   gap: '4px',
 };
 
-const ICON_BOX: React.CSSProperties = {
-  width: '20px',
-  height: '20px',
-  borderRadius: '4px',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontSize: '14px',
-};
-
 export default function ResourceBar({ resources }: Props) {
   return (
     <div style={BAR_STYLE}>
       <div style={ITEM_STYLE}>
-        <span style={{ ...ICON_BOX, background: '#6b4226' }}>🪵</span>
+        <img src={ICONS.wood} alt="wood" style={RES_ICON} />
         <span>{Math.floor(resources.wood)}</span>
       </div>
       <div style={ITEM_STYLE}>
-        <span style={{ ...ICON_BOX, background: '#4a7c3f' }}>🌾</span>
+        <img src={ICONS.food} alt="food" style={RES_ICON} />
         <span>{Math.floor(resources.food)}</span>
       </div>
       <div style={ITEM_STYLE}>
-        <span style={{ ...ICON_BOX, background: '#8b6914' }}>🪙</span>
+        <img src={ICONS.gold} alt="gold" style={RES_ICON} />
         <span>{Math.floor(resources.gold)}</span>
       </div>
-      <div style={{ width: '1px', background: '#555', margin: '0 4px' }} />
       <div style={ITEM_STYLE}>
         <span>👥</span>
         <span>{resources.popUsed}/{resources.popCap}</span>

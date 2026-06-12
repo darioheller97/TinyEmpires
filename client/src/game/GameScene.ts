@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { GameClient } from '../network/GameClient';
+import { preloadAssets, createAnims, unitSkin, factionOf } from './assets';
+import { buildTerrain } from './terrain';
 
 interface NodeInfo { id: string; x: number; y: number; name: string; kind: 'city' | 'intersection' | 'lair'; }
 interface RoadData { id: string; fromId: string; toId: string; splinePoints: { x: number; y: number }[]; }
@@ -27,27 +29,29 @@ export interface MinimapData {
   roads: { x1: number; y1: number; x2: number; y2: number }[];
 }
 
-const MAP_W = 1600;
-const MAP_H = 800;
+const DEPTH_ENTITY = 10; // + y*0.01 for painter's order
 
-const TROOP_LABELS: Record<string, string> = {
-  knight: 'K', lancer: 'L', archer: 'A', monk: 'M', spider: 'S', goblin: 'G',
-};
-const PVE_COLORS: Record<string, number> = { spider: 0x7755aa, goblin: 0x558822 };
+interface UnitVisual {
+  container: Phaser.GameObjects.Container;
+  sprite: Phaser.GameObjects.Sprite;
+  hpBar: Phaser.GameObjects.Rectangle;
+  sheet: string;
+  anim: string;
+}
 
 export default class GameScene extends Phaser.Scene {
   private client: GameClient | null = null;
   private mapBuilt = false;
+  private mapW = 1920;
+  private mapH = 1216;
 
-  // Static map data mirrored from server state
   private nodes: Map<string, NodeInfo> = new Map();
   private roadsById: Map<string, RoadData> = new Map();
 
-  // Render objects
   private cityGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: CityData }> = new Map();
   private buildingGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: BuildData }> = new Map();
   private lairGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: LairData }> = new Map();
-  private unitGfx: Map<string, Phaser.GameObjects.Container> = new Map();
+  private unitGfx: Map<string, UnitVisual> = new Map();
   private cityHealthBars: Map<string, Phaser.GameObjects.Graphics> = new Map();
   private lairHealthBars: Map<string, Phaser.GameObjects.Graphics> = new Map();
   private selectionRing: Phaser.GameObjects.Graphics | null = null;
@@ -58,20 +62,19 @@ export default class GameScene extends Phaser.Scene {
   private prevUnitHealth: Map<string, number> = new Map();
   private playerColors: Map<string, string> = new Map();
 
-  // Radial routing menu
   private radialMenu: Phaser.GameObjects.Container | null = null;
-  // My chosen outgoing road per intersection (mirrors server waypoints)
   private myRoutes: Map<string, string> = new Map();
-
   private dragMoved = false;
 
   constructor() { super({ key: 'GameScene' }); }
 
+  preload(): void {
+    preloadAssets(this);
+  }
+
   create(): void {
     if (import.meta.env.DEV) (window as any).__scene = this;
-    this.cameras.main.setBounds(0, 0, MAP_W, MAP_H);
-    this.cameras.main.centerOn(MAP_W / 2, MAP_H / 2);
-    this.drawTerrain();
+    createAnims(this);
     this.selectionRing = this.add.graphics().setDepth(40);
     this.routeArrowGfx = this.add.graphics().setDepth(30);
     this.setupCameraControls();
@@ -79,29 +82,24 @@ export default class GameScene extends Phaser.Scene {
   }
 
   update(): void {
-    // Smooth out the 10Hz server updates
-    this.unitGfx.forEach(container => {
-      const pos = container.getData('worldPos') as { x: number; y: number } | undefined;
-      if (pos) {
-        container.x += (pos.x - container.x) * 0.25;
-        container.y += (pos.y - container.y) * 0.25;
-      }
+    // Smooth the 10Hz server updates and face the travel direction
+    this.unitGfx.forEach(u => {
+      const pos = u.container.getData('worldPos') as { x: number; y: number } | undefined;
+      if (!pos) return;
+      const dx = pos.x - u.container.x;
+      if (Math.abs(dx) > 0.8) u.sprite.setFlipX(dx < 0);
+      u.container.x += dx * 0.25;
+      u.container.y += (pos.y - u.container.y) * 0.25;
+      u.container.setDepth(DEPTH_ENTITY + u.container.y * 0.01);
     });
-  }
-
-  // ── Terrain ───────────────────────────────────────────────
-  private drawTerrain(): void {
-    const gfx = this.add.graphics();
-    for (let r = 0; r < Math.ceil(MAP_H / 64); r++) {
-      for (let c = 0; c < Math.ceil(MAP_W / 64); c++) {
-        gfx.fillStyle((r + c) % 2 === 0 ? 0x3d7a33 : 0x4a8c3f, 1);
-        gfx.fillRect(c * 64, r * 64, 64, 64);
-      }
-    }
   }
 
   // ── Map construction from server state ────────────────────
   private buildMapFromState(state: any): void {
+    this.mapW = state.mapWidth || 1920;
+    this.mapH = state.mapHeight || 1216;
+    this.cameras.main.setBounds(0, 0, this.mapW, this.mapH);
+
     state.cities.forEach((c: any, id: string) => {
       this.nodes.set(id, { id, x: c.x, y: c.y, name: c.name, kind: 'city' });
     });
@@ -114,14 +112,24 @@ export default class GameScene extends Phaser.Scene {
     });
 
     const drawnPairs = new Set<string>();
+    const physicalSplines: { x: number; y: number }[][] = [];
     state.roads.forEach((r: any, id: string) => {
       const pts = r.splinePoints.map((p: any) => ({ x: p.x, y: p.y }));
       this.roadsById.set(id, { id, fromId: r.fromId, toId: r.toId, splinePoints: pts });
       const pairKey = [r.fromId, r.toId].sort().join('|');
       if (!drawnPairs.has(pairKey)) {
         drawnPairs.add(pairKey);
-        this.drawRoad(pts);
+        physicalSplines.push(pts);
       }
+    });
+
+    buildTerrain(this, {
+      seed: state.mapSeed || 1,
+      width: this.mapW,
+      height: this.mapH,
+      cities: [...state.cities.values()].map((c: any) => ({ x: c.x, y: c.y })),
+      lairs: [...state.lairs.values()].map((l: any) => ({ x: l.x, y: l.y })),
+      roadSplines: physicalSplines,
     });
 
     state.lairs.forEach((l: any, id: string) => {
@@ -138,36 +146,30 @@ export default class GameScene extends Phaser.Scene {
       });
     });
 
-    const onMapBounds = this.game.registry.get('onMapBounds') as (b: { width: number; height: number }) => void;
-    if (onMapBounds) onMapBounds({ width: MAP_W, height: MAP_H });
-    this.mapBuilt = true;
-  }
+    // Center camera on my own city
+    const myId = this.client?.sessionId;
+    let home: any = null;
+    if (myId) state.cities.forEach((c: any) => { if (c.ownerId === myId) home = c; });
+    this.cameras.main.centerOn(home ? home.x : this.mapW / 2, home ? home.y : this.mapH / 2);
 
-  private drawRoad(pts: { x: number; y: number }[]): void {
-    if (pts.length < 2) return;
-    const gfx = this.add.graphics();
-    gfx.lineStyle(16, 0x8b6f47, 1);
-    gfx.beginPath(); gfx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
-    gfx.strokePath();
-    gfx.lineStyle(2, 0x6b4f2e, 0.6);
-    gfx.beginPath(); gfx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
-    gfx.strokePath();
+    const onMapBounds = this.game.registry.get('onMapBounds') as (b: { width: number; height: number }) => void;
+    if (onMapBounds) onMapBounds({ width: this.mapW, height: this.mapH });
+    this.mapBuilt = true;
   }
 
   // ── Intersections + routing ───────────────────────────────
   private drawIntersection(node: NodeInfo): void {
     const container = this.add.container(node.x, node.y);
-    const circle = this.add.circle(0, 0, 18, 0x5c4033, 1);
-    const inner = this.add.circle(0, 0, 12, 0x8b6914, 1);
-    const label = this.add.text(0, -30, node.name, {
+    const circle = this.add.circle(0, 0, 16, 0xb8945e, 0.85);
+    circle.setStrokeStyle(2, 0x6b4f2e, 0.9);
+    const post = this.add.image(0, -8, 'deco_16').setScale(0.8); // signpost-ish deco
+    const label = this.add.text(0, -34, node.name, {
       fontSize: '11px', color: '#ffd700', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5);
-    container.add([circle, inner, label]);
-    container.setDepth(20);
-    container.setInteractive(new Phaser.Geom.Circle(0, 0, 22), Phaser.Geom.Circle.Contains);
+    container.add([circle, post, label]);
+    container.setDepth(DEPTH_ENTITY + node.y * 0.01);
+    container.setInteractive(new Phaser.Geom.Circle(0, 0, 24), Phaser.Geom.Circle.Contains);
     container.on('pointerup', () => { if (!this.dragMoved) this.onIntersectionClick(node); });
     container.on('pointerover', () => container.setScale(1.15));
     container.on('pointerout', () => container.setScale(1));
@@ -178,7 +180,6 @@ export default class GameScene extends Phaser.Scene {
     this.showRadialMenu(node);
   }
 
-  /** Radial menu: one button per outgoing road, placed in its travel direction. */
   private showRadialMenu(node: NodeInfo): void {
     this.hideRadialMenu();
     const outgoing = [...this.roadsById.values()].filter(r => r.fromId === node.id);
@@ -218,7 +219,6 @@ export default class GameScene extends Phaser.Scene {
       btn.on('pointerout', () => { if (!isMine) btn.setFillStyle(0x5c4033); });
     });
 
-    // Center button clears the route (units pick the straightest path)
     const clearBtn = this.add.circle(0, 0, 11, 0x882222, 0.9);
     clearBtn.setInteractive(new Phaser.Geom.Circle(0, 0, 11), Phaser.Geom.Circle.Contains);
     const clearTxt = this.add.text(0, 0, '✕', { fontSize: '11px', color: '#fff', fontFamily: 'monospace' }).setOrigin(0.5);
@@ -237,7 +237,6 @@ export default class GameScene extends Phaser.Scene {
     if (this.radialMenu) { this.radialMenu.destroy(); this.radialMenu = null; }
   }
 
-  /** Persistent chevrons along my chosen outgoing road at each intersection. */
   private drawRouteArrows(): void {
     if (!this.routeArrowGfx) return;
     this.routeArrowGfx.clear();
@@ -267,50 +266,53 @@ export default class GameScene extends Phaser.Scene {
   // ── Cities ────────────────────────────────────────────────
   private drawCity(city: CityData): void {
     const container = this.add.container(city.x, city.y);
-    const influence = this.add.circle(0, 0, city.influenceRadius, 0x4488ff, 0.08);
-    influence.setStrokeStyle(1, 0x4488ff, 0.2);
-    const base = this.add.rectangle(0, 0, 50, 40, 0x5a5a6e, 1);
-    base.setStrokeStyle(2, 0x8888aa, 1);
-    const leftTower = this.add.rectangle(-18, -10, 14, 20, 0x6a6a7e, 1);
-    const rightTower = this.add.rectangle(18, -10, 14, 20, 0x6a6a7e, 1);
-    const keystone = this.add.rectangle(0, -15, 10, 12, 0x7a7a8e, 1);
-    const banner = this.add.rectangle(0, -25, 20, 8, 0xcccccc, 1);
-    const nameLabel = this.add.text(0, 35, city.name, {
-      fontSize: '12px', color: '#ffffff', fontFamily: 'monospace',
+    const influence = this.add.circle(0, 0, city.influenceRadius, 0x4488ff, 0.06);
+    influence.setStrokeStyle(1, 0x4488ff, 0.18);
+    const castle = this.add.image(0, 0, city.ownerId ? `castle_${factionOf(this.playerColors.get(city.ownerId))}` : 'castle_destroyed');
+    castle.setScale(0.55).setOrigin(0.5, 0.6);
+    const fire = this.add.sprite(-30, -40, 'fire').setScale(0.8).setVisible(false);
+    fire.play('fire_anim');
+    const fire2 = this.add.sprite(34, -20, 'fire').setScale(0.6).setVisible(false);
+    fire2.play('fire_anim');
+    const nameLabel = this.add.text(0, 64, city.name, {
+      fontSize: '13px', color: '#ffffff', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5);
-    const levelLabel = this.add.text(0, -40, `Lv.${city.townHallLevel}`, {
-      fontSize: '10px', color: '#ffd700', fontFamily: 'monospace',
+    const levelLabel = this.add.text(0, -86, `Lv.${city.townHallLevel}`, {
+      fontSize: '11px', color: '#ffd700', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 2,
     }).setOrigin(0.5);
 
-    container.add([influence, base, leftTower, rightTower, keystone, banner, nameLabel, levelLabel]);
-    container.setDepth(20);
-    container.setInteractive(new Phaser.Geom.Rectangle(-30, -45, 60, 75), Phaser.Geom.Rectangle.Contains);
+    container.add([influence, castle, fire, fire2, nameLabel, levelLabel]);
+    container.setDepth(DEPTH_ENTITY + city.y * 0.01);
+    container.setInteractive(new Phaser.Geom.Rectangle(-80, -85, 160, 150), Phaser.Geom.Rectangle.Contains);
     const entry = { gfx: container, data: city };
     container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('city', city.id, city.name, entry.data); });
-    container.on('pointerover', () => container.setScale(1.08));
-    container.on('pointerout', () => container.setScale(1));
     this.cityGfx.set(city.id, entry);
   }
 
   private refreshCityVisual(entry: { gfx: Phaser.GameObjects.Container; data: CityData }): void {
     const { gfx, data } = entry;
-    const banner = gfx.getAt(5) as Phaser.GameObjects.Rectangle;
-    const ownerColor = data.ownerId ? this.playerColors.get(data.ownerId) : undefined;
-    banner.setFillStyle(ownerColor ? Phaser.Display.Color.HexStringToColor(ownerColor).color : 0xcccccc);
-    (gfx.getAt(7) as Phaser.GameObjects.Text).setText(`Lv.${data.townHallLevel}`);
+    const castle = gfx.getAt(1) as Phaser.GameObjects.Image;
+    const key = data.ownerId ? `castle_${factionOf(this.playerColors.get(data.ownerId))}` : 'castle_destroyed';
+    if (castle.texture.key !== key) castle.setTexture(key);
+    (gfx.getAt(5) as Phaser.GameObjects.Text).setText(`Lv.${data.townHallLevel}`);
     const influence = gfx.getAt(0) as Phaser.GameObjects.Arc;
     influence.setRadius(data.influenceRadius);
+    const ownerColor = data.ownerId ? this.playerColors.get(data.ownerId) : undefined;
     if (ownerColor) {
       const c = Phaser.Display.Color.HexStringToColor(ownerColor).color;
-      influence.setFillStyle(c, 0.07);
-      influence.setStrokeStyle(1, c, 0.25);
+      influence.setFillStyle(c, 0.06);
+      influence.setStrokeStyle(1, c, 0.22);
     } else {
-      influence.setFillStyle(0xffffff, 0.04);
-      influence.setStrokeStyle(1, 0xffffff, 0.12);
+      influence.setFillStyle(0xffffff, 0.03);
+      influence.setStrokeStyle(1, 0xffffff, 0.1);
     }
-    this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 48, 50, data.health, data.maxHealth);
+    // Burning when badly damaged
+    const burning = data.health < data.maxHealth * 0.7;
+    (gfx.getAt(2) as Phaser.GameObjects.Sprite).setVisible(burning);
+    (gfx.getAt(3) as Phaser.GameObjects.Sprite).setVisible(data.health < data.maxHealth * 0.4);
+    this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 78, 60, data.health, data.maxHealth);
   }
 
   // ── Buildings ─────────────────────────────────────────────
@@ -318,21 +320,29 @@ export default class GameScene extends Phaser.Scene {
     const existing = this.buildingGfx.get(b.id);
     if (existing) { Object.assign(existing.data, b); return; }
     const container = this.add.container(b.x, b.y);
-    const colors: Record<string, number> = {
-      lumber_mill: 0x8b5e3c, farm: 0x7cb342, gold_mine: 0xfdd835,
-      barracks: 0x8d6e63, defense_tower: 0x78909c,
-    };
-    const color = colors[b.type] || 0x666666;
-    const rect = this.add.rectangle(0, 0, 20, 20, color, 0.9);
-    rect.setStrokeStyle(1, 0xffffff, 0.5);
-    const char = b.type === 'lumber_mill' ? 'W' : b.type === 'farm' ? 'F' : b.type === 'gold_mine' ? 'G' : b.type === 'barracks' ? 'B' : 'T';
-    const label = this.add.text(0, 0, char, {
-      fontSize: '10px', color: '#fff', fontFamily: 'monospace',
-      stroke: '#000', strokeThickness: 2,
-    }).setOrigin(0.5);
-    container.add([rect, label]);
-    container.setDepth(20);
-    container.setInteractive(new Phaser.Geom.Rectangle(-12, -12, 24, 24), Phaser.Geom.Rectangle.Contains);
+    const city = this.cityGfx.get(b.cityId);
+    const color = factionOf(city ? this.playerColors.get(city.data.ownerId) : undefined);
+
+    if (b.type === 'barracks') {
+      container.add(this.add.image(0, 0, `house_${color}`).setScale(0.55).setOrigin(0.5, 0.68));
+    } else if (b.type === 'defense_tower') {
+      container.add(this.add.image(0, 0, `tower_${color}`).setScale(0.5).setOrigin(0.5, 0.72));
+    } else if (b.type === 'gold_mine') {
+      container.add(this.add.image(0, 0, 'goldmine').setScale(0.55).setOrigin(0.5, 0.6));
+    } else if (b.type === 'farm') {
+      const s1 = this.add.sprite(-12, 0, 'sheep').setScale(0.45);
+      s1.play({ key: 'sheep_anim', startFrame: 0 });
+      const s2 = this.add.sprite(14, 8, 'sheep').setScale(0.38);
+      s2.play({ key: 'sheep_anim', startFrame: 3 });
+      container.add([this.add.image(0, 6, 'deco_8').setScale(0.9), s1, s2]);
+    } else { // lumber_mill
+      const tree = this.add.sprite(0, -8, 'tree').setScale(0.5).setOrigin(0.5, 0.7);
+      tree.play('tree_anim');
+      container.add([tree, this.add.image(16, 10, 'res_wood').setScale(0.28)]);
+    }
+
+    container.setDepth(DEPTH_ENTITY + b.y * 0.01);
+    container.setInteractive(new Phaser.Geom.Rectangle(-26, -40, 52, 64), Phaser.Geom.Rectangle.Contains);
     const entry = { gfx: container, data: { ...b } };
     container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('building', b.id, b.type, entry.data); });
     this.buildingGfx.set(b.id, entry);
@@ -343,16 +353,19 @@ export default class GameScene extends Phaser.Scene {
     if (this.lairGfx.has(l.id)) return;
     const container = this.add.container(l.x, l.y);
     const isSpider = l.type === 'spider';
-    const base = this.add.circle(0, 0, 22, isSpider ? 0x2a2a3a : 0x3a2a1a, 1);
-    base.setStrokeStyle(2, isSpider ? 0x555577 : 0x6b4f2e, 1);
-    const inner = this.add.circle(0, 0, 14, isSpider ? 0x444466 : 0x5a3a1a, 1);
-    const icon = this.add.text(0, 0, isSpider ? '🕷' : '👺', { fontSize: '16px' }).setOrigin(0.5);
-    const label = this.add.text(0, -30, isSpider ? 'Spider Cave' : 'Goblin Stump', {
-      fontSize: '10px', color: isSpider ? '#aa88ff' : '#88cc44', fontFamily: 'monospace',
+    if (isSpider) {
+      const cave = this.add.image(0, 0, 'goldmine_destroyed').setScale(0.7).setOrigin(0.5, 0.6);
+      cave.setTint(0xbb99dd);
+      container.add(cave);
+    } else {
+      container.add(this.add.image(0, 0, 'goblin_house').setScale(0.65).setOrigin(0.5, 0.65));
+    }
+    const label = this.add.text(0, 42, isSpider ? 'Spider Cave' : 'Goblin Stump', {
+      fontSize: '11px', color: isSpider ? '#cba6ff' : '#9be564', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5);
-    container.add([base, inner, icon, label]);
-    container.setDepth(20);
+    container.add(label);
+    container.setDepth(DEPTH_ENTITY + l.y * 0.01);
     this.lairGfx.set(l.id, { gfx: container, data: { ...l } });
   }
 
@@ -360,18 +373,17 @@ export default class GameScene extends Phaser.Scene {
     const { gfx, data } = entry;
     const destroyed = data.health <= 0;
     gfx.setAlpha(destroyed ? 0.35 : 1);
-    const label = gfx.getAt(3) as Phaser.GameObjects.Text;
+    const label = gfx.getAt(1) as Phaser.GameObjects.Text;
     const baseName = data.type === 'spider' ? 'Spider Cave' : 'Goblin Stump';
     label.setText(destroyed ? `${baseName} (razed)` : baseName);
     if (destroyed) {
       const bar = this.lairHealthBars.get(data.id);
       if (bar) { bar.destroy(); this.lairHealthBars.delete(data.id); }
     } else {
-      this.updateBar(this.lairHealthBars, data.id, data.x, data.y + 30, 44, data.health, data.maxHealth);
+      this.updateBar(this.lairHealthBars, data.id, data.x, data.y + 52, 44, data.health, data.maxHealth);
     }
   }
 
-  /** Shared damaged-only health bar rendering. */
   private updateBar(store: Map<string, Phaser.GameObjects.Graphics>, id: string, cx: number, y: number, width: number, hp: number, maxHp: number): void {
     let bar = store.get(id);
     if (hp >= maxHp) {
@@ -392,48 +404,65 @@ export default class GameScene extends Phaser.Scene {
   private syncUnit(unit: any): void {
     const pos = this.getUnitWorldPos(unit);
     const existing = this.unitGfx.get(unit.id);
+    const desiredAnim = unit.status === 'fighting' || unit.status === 'sieging'
+      ? 'attack' : unit.status === 'defending' ? 'idle' : 'walk';
+
     if (existing) {
-      if (pos) existing.setData('worldPos', pos);
-      const hpBar = existing.getData('hpBar') as Phaser.GameObjects.Rectangle;
+      if (pos) existing.container.setData('worldPos', pos);
+      const animKey = `${existing.sheet}_${desiredAnim}`;
+      if (existing.anim !== animKey) {
+        existing.sprite.play(animKey);
+        existing.anim = animKey;
+      }
       const ratio = unit.health / (unit.maxHealth || 100);
-      hpBar.setScale(Math.max(0, ratio), 1);
-      hpBar.setFillStyle(ratio > 0.5 ? 0x44cc44 : ratio > 0.25 ? 0xcccc44 : 0xcc4444);
-      hpBar.setVisible(unit.health < unit.maxHealth);
+      existing.container.setData('hpRatio', ratio);
+      existing.hpBar.setScale(Math.max(0, ratio), 1);
+      existing.hpBar.setFillStyle(ratio > 0.5 ? 0x44cc44 : ratio > 0.25 ? 0xcccc44 : 0xcc4444);
+      existing.hpBar.setVisible(unit.health < unit.maxHealth);
       return;
     }
     if (!pos) return;
 
-    const isPvE = unit.ownerId === 'pve';
-    const ownerHex = this.playerColors.get(unit.ownerId);
-    const color = isPvE
-      ? (PVE_COLORS[unit.type] ?? 0x999999)
-      : ownerHex ? Phaser.Display.Color.HexStringToColor(ownerHex).color : 0xffffff;
-
+    const skin = unitSkin(unit.type, this.playerColors.get(unit.ownerId));
     const container = this.add.container(pos.x, pos.y);
-    const body = this.add.circle(0, 0, 6, color, 1);
-    body.setStrokeStyle(1, isPvE ? 0x000000 : 0xffffff, 0.7);
-    const label = this.add.text(0, 0, TROOP_LABELS[unit.type] || '?', {
-      fontSize: '7px', color: '#fff', fontFamily: 'monospace',
-      stroke: '#000', strokeThickness: 2,
-    }).setOrigin(0.5);
-    const hpBar = this.add.rectangle(0, -9, 12, 3, 0x44cc44, 0.8);
+    const sprite = this.add.sprite(0, 0, skin.sheet).setScale(0.65);
+    if (skin.tint) sprite.setTint(skin.tint);
+    const animKey = `${skin.sheet}_${desiredAnim}`;
+    sprite.play(animKey);
+    const hpBar = this.add.rectangle(0, -34, 22, 4, 0x44cc44, 0.9);
     hpBar.setVisible(false);
-    container.add([body, label, hpBar]);
+    container.add([sprite, hpBar]);
     container.setData('worldPos', pos);
-    container.setData('hpBar', hpBar);
-    container.setDepth(50);
-    this.unitGfx.set(unit.id, container);
+    container.setDepth(DEPTH_ENTITY + pos.y * 0.01);
+    this.unitGfx.set(unit.id, { container, sprite, hpBar, sheet: skin.sheet, anim: animKey });
+  }
+
+  private removeUnitVisual(id: string, died: boolean): void {
+    const u = this.unitGfx.get(id);
+    if (!u) return;
+    if (died) {
+      const isBarrel = u.sheet === 'barrel';
+      const fx = this.add.sprite(u.container.x, u.container.y, isBarrel ? 'explosion' : 'dead')
+        .setScale(isBarrel ? 0.7 : 0.6)
+        .setDepth(DEPTH_ENTITY + u.container.y * 0.01 + 0.5);
+      fx.play(isBarrel ? 'explosion_anim' : 'dead_anim');
+      fx.once('animationcomplete', () => {
+        if (isBarrel) { fx.destroy(); return; }
+        this.tweens.add({ targets: fx, alpha: 0, delay: 1200, duration: 600, onComplete: () => fx.destroy() });
+      });
+    }
+    u.container.destroy();
+    this.unitGfx.delete(id);
   }
 
   private getUnitWorldPos(unit: any): { x: number; y: number } | null {
-    // Garrisoned / besieging units cluster in a ring around their node
     if (unit.atNodeId) {
       const node = this.nodes.get(unit.atNodeId);
       if (!node) return null;
       let hash = 0;
       for (let i = 0; i < unit.id.length; i++) hash = (hash * 31 + unit.id.charCodeAt(i)) >>> 0;
       const angle = (hash % 360) * Math.PI / 180;
-      const radius = 32 + (hash % 3) * 8;
+      const radius = 50 + (hash % 3) * 14;
       return { x: node.x + Math.cos(angle) * radius, y: node.y + Math.sin(angle) * radius };
     }
     const road = this.roadsById.get(unit.roadId);
@@ -449,12 +478,12 @@ export default class GameScene extends Phaser.Scene {
   }
 
   private showFloatingDamage(x: number, y: number, amount: number, color: string = '#ff4444'): void {
-    const txt = this.add.text(x, y - 10, `-${amount}`, {
-      fontSize: '11px', color, fontFamily: 'monospace',
+    const txt = this.add.text(x, y - 24, `-${amount}`, {
+      fontSize: '12px', color, fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 3, fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(200);
     this.tweens.add({
-      targets: txt, y: y - 40, alpha: 0, duration: 800, ease: 'Power2',
+      targets: txt, y: y - 56, alpha: 0, duration: 800, ease: 'Power2',
       onComplete: () => txt.destroy(),
     });
   }
@@ -477,11 +506,11 @@ export default class GameScene extends Phaser.Scene {
     if (type === 'city') {
       this.selectionRing.strokeCircle(data.x, data.y, data.influenceRadius);
       this.selectionRing.lineStyle(3, 0xffff00, 1);
-      this.selectionRing.strokeRect(data.x - 30, data.y - 30, 60, 60);
+      this.selectionRing.strokeCircle(data.x, data.y, 70);
     } else if (type === 'intersection') {
-      this.selectionRing.strokeCircle(data.x, data.y, 22);
+      this.selectionRing.strokeCircle(data.x, data.y, 24);
     } else if (type === 'building') {
-      this.selectionRing.strokeRect(data.x - 14, data.y - 14, 28, 28);
+      this.selectionRing.strokeCircle(data.x, data.y, 34);
     }
   }
 
@@ -508,8 +537,8 @@ export default class GameScene extends Phaser.Scene {
         this.cameras.main.scrollY -= dy / this.cameras.main.zoom;
       }
     });
-    this.input.on('wheel', (_p: any, _gx: any, _gy: any, dz: number[]) => {
-      this.cameras.main.setZoom(Phaser.Math.Clamp(this.cameras.main.zoom - dz[0] * 0.001, 0.5, 2));
+    this.input.on('wheel', (_p: Phaser.Input.Pointer, _objs: unknown[], _dx: number, dy: number) => {
+      this.cameras.main.setZoom(Phaser.Math.Clamp(this.cameras.main.zoom - dy * 0.001, 0.5, 2));
     });
     this.input.on('pointerdown', () => { this.dragMoved = false; });
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
@@ -531,13 +560,10 @@ export default class GameScene extends Phaser.Scene {
       this.client.onStateChange(state => this.syncState(state));
     } catch (e) {
       console.warn('Could not connect to server', e);
-      const onConnectionLost = this.game.registry.get('onConnectionLost') as (() => void) | undefined;
-      if (onConnectionLost) onConnectionLost();
     }
   }
 
   private syncState(state: any): void {
-    // Player colors first — everything else tints by them
     if (state.players) {
       state.players.forEach((p: any, id: string) => this.playerColors.set(id, p.colorHex));
     }
@@ -547,7 +573,6 @@ export default class GameScene extends Phaser.Scene {
       this.buildMapFromState(state);
     }
 
-    // Cities
     state.cities.forEach((s: any, id: string) => {
       const entry = this.cityGfx.get(id);
       if (!entry) return;
@@ -559,12 +584,11 @@ export default class GameScene extends Phaser.Scene {
       entry.data.health = s.health;
       entry.data.maxHealth = s.maxHealth;
       if (prevHealth > s.health) {
-        this.showFloatingDamage(entry.data.x, entry.data.y, prevHealth - s.health, '#ff8800');
+        this.showFloatingDamage(entry.data.x, entry.data.y - 40, prevHealth - s.health, '#ff8800');
       }
       this.refreshCityVisual(entry);
     });
 
-    // Lairs
     state.lairs.forEach((s: any, id: string) => {
       const entry = this.lairGfx.get(id);
       if (!entry) return;
@@ -573,7 +597,6 @@ export default class GameScene extends Phaser.Scene {
       this.refreshLairVisual(entry);
     });
 
-    // Buildings
     this.cityBuildingCounts.clear();
     const liveBuildings = new Set<string>();
     state.buildings.forEach((b: any) => {
@@ -595,7 +618,6 @@ export default class GameScene extends Phaser.Scene {
     const onBuildingsUpdate = this.game.registry.get('onBuildingsUpdate') as ((c: Map<string, number>) => void);
     if (onBuildingsUpdate) onBuildingsUpdate(new Map(this.cityBuildingCounts));
 
-    // Units
     const syncedIds = new Set<string>();
     state.units.forEach((u: any) => {
       syncedIds.add(u.id);
@@ -607,12 +629,15 @@ export default class GameScene extends Phaser.Scene {
       this.prevUnitHealth.set(u.id, u.health);
       this.syncUnit(u);
     });
-    this.prevUnitHealth.forEach((_, id) => { if (!syncedIds.has(id)) this.prevUnitHealth.delete(id); });
-    this.unitGfx.forEach((gfx, id) => {
-      if (!syncedIds.has(id)) { gfx.destroy(); this.unitGfx.delete(id); }
+    this.unitGfx.forEach((u, id) => {
+      if (!syncedIds.has(id)) {
+        // Low health on last sight ⇒ it died in battle, show the death effect
+        const ratio = (u.container.getData('hpRatio') as number) ?? 1;
+        this.removeUnitVisual(id, ratio <= 0.45);
+        this.prevUnitHealth.delete(id);
+      }
     });
 
-    // My resources + techs
     const myId = this.client?.sessionId;
     if (myId && state.players) {
       const me = state.players.get(myId);
@@ -629,10 +654,9 @@ export default class GameScene extends Phaser.Scene {
       }
     }
 
-    // Minimap
     const onMinimapData = this.game.registry.get('onMinimapData') as ((d: MinimapData) => void) | undefined;
     if (onMinimapData) {
-      const data: MinimapData = { width: MAP_W, height: MAP_H, cities: [], lairs: [], roads: [] };
+      const data: MinimapData = { width: this.mapW, height: this.mapH, cities: [], lairs: [], roads: [] };
       this.cityGfx.forEach(entry => {
         data.cities.push({
           x: entry.data.x, y: entry.data.y,
@@ -653,7 +677,6 @@ export default class GameScene extends Phaser.Scene {
       onMinimapData(data);
     }
 
-    // Keep React's copy of the selection fresh
     if (this.selection.type !== 'none') {
       this.redrawSelectionRing();
       const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void);

@@ -1,4 +1,5 @@
 import React from 'react';
+import { PANEL, BUTTON, BUTTON_DISABLED, BUTTON_RED, ICONS, RES_ICON } from './skin';
 
 export interface TechOption {
   id: string;
@@ -19,48 +20,34 @@ interface Props {
 
 const OVERLAY: React.CSSProperties = {
   position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
-  background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center',
+  background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center',
   justifyContent: 'center', zIndex: 1000, pointerEvents: 'auto',
 };
 
 const MODAL: React.CSSProperties = {
-  background: 'rgba(20, 15, 8, 0.95)', border: '3px solid #8b6914',
-  borderRadius: '12px', padding: '20px', fontFamily: 'monospace',
-  color: '#ffd700', minWidth: '340px', maxWidth: '500px',
-  maxHeight: '80vh', overflowY: 'auto',
+  ...PANEL,
+  minWidth: '380px',
+  maxWidth: '520px',
+  maxHeight: '80vh',
+  overflowY: 'auto',
+  fontSize: '12px',
 };
 
-const TITLE: React.CSSProperties = {
-  fontSize: '18px', fontWeight: 'bold', textAlign: 'center',
-  borderBottom: '2px solid #8b6914', paddingBottom: '10px', marginBottom: '12px',
+const TECH_BTN: React.CSSProperties = {
+  ...BUTTON,
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  width: '100%',
+  textAlign: 'left',
+  fontSize: '12px',
+  marginBottom: '3px',
 };
 
-const TECH_BUTTON: React.CSSProperties = {
-  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-  width: '100%', background: 'rgba(60,40,20,0.8)', border: '1px solid #6b4f2e',
-  borderRadius: '6px', color: '#ddd', padding: '8px 12px',
-  marginBottom: '6px', cursor: 'pointer', fontSize: '12px',
-  fontFamily: 'monospace', textAlign: 'left',
-};
+const TECH_BTN_OFF: React.CSSProperties = { ...TECH_BTN, ...BUTTON_DISABLED, width: '100%' };
+const TECH_BTN_DONE: React.CSSProperties = { ...TECH_BTN, ...BUTTON_RED, width: '100%', cursor: 'default' };
 
-const DISABLED_BUTTON: React.CSSProperties = {
-  ...TECH_BUTTON, opacity: 0.35, cursor: 'not-allowed',
-};
-
-const DONE_BUTTON: React.CSSProperties = {
-  ...TECH_BUTTON, border: '1px solid #44cc44', background: 'rgba(20,60,20,0.8)',
-  cursor: 'default',
-};
-
-const CLOSE: React.CSSProperties = {
-  display: 'block', margin: '12px auto 0', background: 'rgba(100,20,20,0.8)',
-  border: '1px solid #cc4444', borderRadius: '4px', color: '#ddd',
-  padding: '6px 20px', cursor: 'pointer', fontFamily: 'monospace', fontSize: '12px',
-};
-
-const CAT_HEADER: React.CSSProperties = {
-  fontSize: '14px', color: '#ffd700', margin: '10px 0 6px', fontWeight: 'bold',
-};
+const SMALL_ICON: React.CSSProperties = { ...RES_ICON, width: 18, height: 18 };
 
 export default function TechTreeModal({ visible, researched, gold, techs, onResearch, onClose }: Props) {
   if (!visible) return null;
@@ -70,42 +57,42 @@ export default function TechTreeModal({ visible, researched, gold, techs, onRese
   return (
     <div style={OVERLAY} onClick={onClose}>
       <div style={MODAL} onClick={e => e.stopPropagation()}>
-        <div style={TITLE}>Tech Tree</div>
-        <div style={{ fontSize: '11px', color: '#aaa', textAlign: 'center', marginBottom: '10px' }}>
-          Gold: {Math.floor(gold)}
+        <div style={{ fontSize: '18px', textAlign: 'center', marginBottom: '4px' }}>Tech Tree</div>
+        <div style={{ fontSize: '12px', textAlign: 'center', marginBottom: '10px' }}>
+          <img src={ICONS.gold} style={SMALL_ICON} alt="g" /> {Math.floor(gold)}
         </div>
 
         {categories.map(cat => (
           <div key={cat}>
-            <div style={CAT_HEADER}>{cat === 'unit' ? '⚔️ Unit Upgrades' : '🏗️ Economy'}</div>
+            <div style={{ fontSize: '13px', margin: '8px 0 4px' }}>
+              {cat === 'unit' ? '⚔️ Unit Upgrades' : '🏗️ Economy'}
+            </div>
             {techs.filter(t => t.category === cat).map(tech => {
               const isResearched = researched.includes(tech.id);
               const canAfford = gold >= tech.cost;
-              let style: React.CSSProperties;
-              if (isResearched) style = DONE_BUTTON;
-              else if (canAfford) style = TECH_BUTTON;
-              else style = DISABLED_BUTTON;
-
+              const style = isResearched ? TECH_BTN_DONE : canAfford ? TECH_BTN : TECH_BTN_OFF;
               return (
-                <div
+                <button
                   key={tech.id}
                   style={style}
                   onClick={() => { if (!isResearched && canAfford) onResearch(tech.id); }}
                 >
-                  <div>
-                    <div style={{ fontWeight: 'bold' }}>{tech.name}</div>
-                    <div style={{ fontSize: '10px', color: '#999' }}>{tech.desc}</div>
-                  </div>
-                  <div style={{ color: isResearched ? '#44cc44' : '#ffd700', whiteSpace: 'nowrap' }}>
-                    {isResearched ? '✓ DONE' : `${tech.cost}G`}
-                  </div>
-                </div>
+                  <span>
+                    <span style={{ display: 'block' }}>{tech.name}</span>
+                    <span style={{ display: 'block', fontSize: '10px', opacity: 0.8, fontWeight: 400 }}>{tech.desc}</span>
+                  </span>
+                  <span style={{ whiteSpace: 'nowrap' }}>
+                    {isResearched ? '✓' : <><img src={ICONS.gold} style={SMALL_ICON} alt="g" />{tech.cost}</>}
+                  </span>
+                </button>
               );
             })}
           </div>
         ))}
 
-        <button style={CLOSE} onClick={onClose}>Close</button>
+        <button style={{ ...BUTTON_RED, display: 'block', margin: '10px auto 0', fontSize: '12px' }} onClick={onClose}>
+          Close
+        </button>
       </div>
     </div>
   );

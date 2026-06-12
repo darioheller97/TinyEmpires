@@ -31,4 +31,13 @@ export class GameState extends Schema {
 
   @type('number')
   tick: number = 0;
+
+  @type('number')
+  mapSeed: number = 0;
+
+  @type('number')
+  mapWidth: number = 1920;
+
+  @type('number')
+  mapHeight: number = 1216;
 }

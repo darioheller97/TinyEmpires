@@ -35,7 +35,7 @@ export default function Minimap({ data, onNavigate }: Props) {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    ctx.fillStyle = '#1a3a14';
+    ctx.fillStyle = '#2a4d6e';
     ctx.fillRect(0, 0, MINIMAP_W, MINIMAP_H);
     if (!data) return;
 

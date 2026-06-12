@@ -7,8 +7,10 @@ import { Road } from './schema/Road';
 import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS, BUILDING_PRODUCTION } from './schema/BuildingNode';
 import { LairNode } from './schema/LairNode';
 import { UnitNode, TROOP_STATS, TROOP_TYPES, RPS_ADVANTAGE } from './schema/UnitNode';
+import { generateMap } from './MapGenerator';
 
-const PLAYER_COLORS = ['#4488ff', '#ff4444', '#44cc44', '#ffaa00', '#ff44ff', '#44ffff'];
+// Matches the four Tiny Swords faction palettes: Blue, Red, Yellow, Purple
+const PLAYER_COLORS = ['#4488ff', '#ff4444', '#ffd700', '#aa44ff'];
 
 const ECONOMY_INTERVAL_TICKS = 10;   // 1s at 10Hz
 const COMBAT_COOLDOWN_TICKS = 3;     // attack every 0.3s while engaged
@@ -21,32 +23,6 @@ const HEAL_INTERVAL_TICKS = 5;
 
 const SPIDER_BOUNTY = { wood: 0, food: 120, gold: 30 };
 const GOBLIN_BOUNTY = { wood: 0, food: 30, gold: 120 };
-
-interface HNode { id: string; x: number; y: number; name: string; }
-interface HEdge { a: string; b: string; via: { x: number; y: number }[]; }
-
-const MAP_CITIES: HNode[] = [
-  { id: 'city_west', x: 200, y: 400, name: 'Westwatch Keep' },
-  { id: 'city_east', x: 1400, y: 400, name: 'Eastgate Citadel' },
-  { id: 'city_north', x: 800, y: 140, name: 'Northhold' },
-  { id: 'city_south', x: 800, y: 660, name: 'Southspire' },
-];
-const MAP_INTERSECTIONS: HNode[] = [
-  { id: 'cross_mid', x: 800, y: 400, name: "King's Cross" },
-];
-const MAP_LAIRS: (HNode & { type: string })[] = [
-  { id: 'lair_spider', x: 440, y: 170, name: 'Spider Cave', type: 'spider' },
-  { id: 'lair_goblin', x: 1160, y: 630, name: 'Goblin Stump', type: 'goblin' },
-];
-// Each edge becomes two directed roads (forward + reverse)
-const MAP_EDGES: HEdge[] = [
-  { a: 'city_west', b: 'cross_mid', via: [{ x: 500, y: 380 }] },
-  { a: 'city_east', b: 'cross_mid', via: [{ x: 1100, y: 420 }] },
-  { a: 'city_north', b: 'cross_mid', via: [{ x: 780, y: 270 }] },
-  { a: 'city_south', b: 'cross_mid', via: [{ x: 820, y: 530 }] },
-  { a: 'lair_spider', b: 'cross_mid', via: [{ x: 620, y: 280 }] },
-  { a: 'lair_goblin', b: 'cross_mid', via: [{ x: 980, y: 520 }] },
-];
 
 function buildSplinePoints(a: { x: number; y: number }, via: { x: number; y: number }[], b: { x: number; y: number }): { x: number; y: number }[] {
   const pts: { x: number; y: number }[] = [];
@@ -65,7 +41,7 @@ let idCounter = 0;
 function nextId(p: string): string { return `${p}_${++idCounter}_${Date.now()}`; }
 
 export class GameRoom extends Room<GameState> {
-  maxClients = 6;
+  maxClients = 4;
   private tickInterval!: ReturnType<typeof setInterval>;
   // Maps each directed road to its opposite-direction twin
   private reverseRoad = new Map<string, string>();
@@ -73,27 +49,33 @@ export class GameRoom extends Room<GameState> {
   onCreate(options: any): void {
     console.log('GameRoom created!');
     this.setState(new GameState());
-    this.initMap();
+    this.initMap(typeof options?.mapSeed === 'number' ? options.mapSeed >>> 0 : undefined);
     this.setMessageHandlers();
     this.tickInterval = setInterval(() => this.gameTick(), 100);
   }
 
-  private initMap(): void {
-    MAP_CITIES.forEach(c => {
+  private initMap(fixedSeed?: number): void {
+    const seed = fixedSeed ?? (Math.random() * 0xffffffff) >>> 0;
+    const map = generateMap(seed);
+    this.state.mapSeed = seed;
+    this.state.mapWidth = map.width;
+    this.state.mapHeight = map.height;
+
+    map.cities.forEach(c => {
       const city = new CityNode(c.id, c.x, c.y, c.name);
       city.maxBuildings = 2;
       this.state.cities.set(c.id, city);
     });
-    MAP_INTERSECTIONS.forEach(n => {
+    map.intersections.forEach(n => {
       this.state.intersections.set(n.id, new IntersectionNode(n.id, n.x, n.y, n.name));
     });
-    MAP_LAIRS.forEach(l => {
+    map.lairs.forEach(l => {
       const lair = new LairNode(l.id, l.x, l.y, l.type);
       lair.spawnIntervalTicks = PVE_SPAWN_INTERVAL;
       this.state.lairs.set(l.id, lair);
     });
-    const allNodes = [...MAP_CITIES, ...MAP_INTERSECTIONS, ...MAP_LAIRS];
-    MAP_EDGES.forEach((e, i) => {
+    const allNodes = [...map.cities, ...map.intersections, ...map.lairs];
+    map.edges.forEach((e, i) => {
       const aN = allNodes.find(n => n.id === e.a);
       const bN = allNodes.find(n => n.id === e.b);
       if (!aN || !bN) return;
@@ -411,8 +393,15 @@ export class GameRoom extends Room<GameState> {
       return;
     }
     if (unit.isPvE && !city.ownerId) {
-      // Monsters don't bother razing empty ruins
-      toRemove.push(unit.id);
+      // Monsters march through empty ruins toward their prey
+      const road = this.state.roads.get(unit.roadId);
+      const next = road ? this.findNextRoad(unit, road, cityId) : null;
+      if (next) {
+        unit.roadId = next.id; unit.t = 0;
+        unit.originNodeId = cityId; unit.roadsCrossed++;
+      } else {
+        toRemove.push(unit.id);
+      }
       return;
     }
     unit.t = 1; unit.status = 'sieging'; unit.atNodeId = cityId;

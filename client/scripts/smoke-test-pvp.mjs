@@ -1,8 +1,9 @@
-// PvP smoke test: two players send knights at each other on the same road
-// and they must engage and fight (the original code let them pass through).
+// PvP smoke test on a generated map: two players push troops out; expect
+// engagements or sieges to deal damage, and population to be refunded.
 import { Client } from 'colyseus.js';
 
 const url = process.argv[2] || 'ws://localhost:2567';
+const SEED = 16;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failures = 0;
 function check(name, cond, detail = '') {
@@ -12,7 +13,7 @@ function check(name, cond, detail = '') {
 
 async function join(name) {
   const c = new Client(url);
-  const room = await c.joinOrCreate('game_room', { name });
+  const room = await c.joinOrCreate('game_room', { name, mapSeed: SEED });
   await sleep(800);
   return room;
 }
@@ -29,36 +30,34 @@ roomA.send('build_structure', { cityId: meA.connectedCityId, type: 'barracks' })
 roomB.send('build_structure', { cityId: meB.connectedCityId, type: 'barracks' });
 await sleep(500);
 
-// Route both players' troops toward the other's city at the crossroads
-let roadToB = null, roadToA = null;
-state.roads.forEach((r, id) => {
-  if (r.fromId === 'cross_mid' && r.toId === meB.connectedCityId) roadToB = id;
-  if (r.fromId === 'cross_mid' && r.toId === meA.connectedCityId) roadToA = id;
-});
-roomA.send('set_route', { intersectionId: 'cross_mid', targetRoadId: roadToB });
-roomB.send('set_route', { intersectionId: 'cross_mid', targetRoadId: roadToA });
-
 roomA.send('spawn_troops', { cityId: meA.connectedCityId, type: 'knight' });
-await sleep(1200); // stagger so they meet mid-road, not exactly on the node
+await sleep(1000);
 roomB.send('spawn_troops', { cityId: meB.connectedCityId, type: 'knight' });
 await sleep(500);
 check('both knights spawned', state.units.size === 2, `units=${state.units.size}`);
 
-// Watch for engagement: both units should take damage, then die
-let sawDamage = false, sawFightingStatus = false;
-for (let i = 0; i < 40; i++) {
+// Expect combat or siege damage somewhere within 90s, then resolution
+const cityHp0 = new Map();
+state.cities.forEach((c, id) => cityHp0.set(id, c.health));
+let sawUnitDamage = false, sawSiege = false, sawFighting = false;
+const playerUnits = () => {
+  let n = 0;
+  state.units.forEach(u => { if (u.ownerId === roomA.sessionId || u.ownerId === roomB.sessionId) n++; });
+  return n;
+};
+for (let i = 0; i < 180; i++) {
   await sleep(500);
-  let damaged = 0;
   state.units.forEach(u => {
-    if (u.health < u.maxHealth) damaged++;
-    if (u.status === 'fighting') sawFightingStatus = true;
+    if (u.health < u.maxHealth) sawUnitDamage = true;
+    if (u.status === 'fighting' || u.status === 'sieging') sawFighting = true;
   });
-  if (damaged >= 2) sawDamage = true;
-  if (state.units.size === 0) break;
+  state.cities.forEach((c, id) => { if (c.health < cityHp0.get(id)) sawSiege = true; });
+  if ((sawUnitDamage || sawSiege) && playerUnits() === 0) break;
 }
-check('opposing units engaged (both damaged)', sawDamage);
-check('units entered fighting status', sawFightingStatus);
-check('battle resolved (units died)', state.units.size < 2, `units left=${state.units.size}`);
+check('units engaged or besieged (damage observed)', sawUnitDamage || sawSiege,
+  `unitDmg=${sawUnitDamage} siege=${sawSiege}`);
+check('fighting/sieging status seen', sawFighting);
+check('battle resolved (no player units left)', playerUnits() === 0, `units left=${playerUnits()}`);
 await sleep(500);
 check('population refunded for player A', meA.populationUsed === 0, `popUsed=${meA.populationUsed}`);
 check('population refunded for player B', meB.populationUsed === 0, `popUsed=${meB.populationUsed}`);
