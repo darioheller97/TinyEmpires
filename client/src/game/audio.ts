@@ -27,10 +27,13 @@ export function startAmbient(): void {
  * is from the camera centre and the more the view is zoomed out. The throttle
  * (per sound) stops rapid events from stacking into a buzz.
  */
-export function playSfx(name: string, opts: { volume?: number; throttleMs?: number; x?: number; y?: number } = {}): void {
+export function playSfx(name: string, opts: { volume?: number; throttleMs?: number; throttleKey?: string; x?: number; y?: number } = {}): void {
   if (muted || !scene || !scene.cache.audio.exists(`sfx_${name}`)) return;
   const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  const prev = lastPlayed[name];
+  // Variant sounds (e.g. the sword-clash set) share one throttle bucket so
+  // randomising the clip never multiplies the event density into a buzz.
+  const key = opts.throttleKey ?? name;
+  const prev = lastPlayed[key];
   if (opts.throttleMs && prev !== undefined && now - prev < opts.throttleMs) return;
 
   let vol = opts.volume ?? 0.55;
@@ -43,7 +46,7 @@ export function playSfx(name: string, opts: { volume?: number; throttleMs?: numb
     vol *= Phaser.Math.Clamp(1 - (dist / maxD) * 0.6, 0.3, 1);   // edge falloff
     vol *= Phaser.Math.Clamp(cam.zoom, 0.45, 1);                 // quieter zoomed out
   }
-  lastPlayed[name] = now;
+  lastPlayed[key] = now;
   try { scene.sound.play(`sfx_${name}`, { volume: vol }); } catch { /* ignore */ }
 }
 

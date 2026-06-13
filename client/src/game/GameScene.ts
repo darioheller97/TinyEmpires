@@ -760,7 +760,8 @@ export default class GameScene extends Phaser.Scene {
       if (prevRatio !== undefined && ratio < prevRatio - 0.001) {
         // One battle cue at a time: long throttle + spatial falloff so it never
         // buzzes, goes quiet off to the side, and fades when zoomed out.
-        playSfx('sword_clash', { volume: 0.26, throttleMs: 650, x: existing.container.x, y: existing.container.y });
+        const clash = Phaser.Utils.Array.GetRandom(['sword_clash', 'sword_clash2', 'sword_clash3', 'sword_clash4']);
+        playSfx(clash, { volume: 0.26, throttleMs: 650, throttleKey: 'sword_clash', x: existing.container.x, y: existing.container.y });
       }
       existing.container.setData('hpRatio', ratio);
       this.setBarRatio(existing.hpBar, ratio);
@@ -842,6 +843,10 @@ export default class GameScene extends Phaser.Scene {
       .setRotation(Math.atan2(toY - fromY, toX - fromX))
       .setDepth(DEPTH_ENTITY + Math.max(fromY, toY) * 0.01 + 1);
     const dist = Math.hypot(toX - fromX, toY - fromY);
+    // One bowstring cue per volley: a shared throttle bucket collapses the
+    // arrows a fort or cluster looses in the same tick into a single twang.
+    const bow = Phaser.Utils.Array.GetRandom(['bow_shot', 'bow_shot2']);
+    playSfx(bow, { volume: 0.3, throttleMs: 180, throttleKey: 'bow_shot', x: fromX, y: fromY });
     this.tweens.add({
       targets: arrow, x: toX, y: toY,
       duration: Math.max(140, dist * 1.4), ease: 'Linear',
