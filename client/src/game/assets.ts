@@ -149,7 +149,7 @@ for (let i = 1; i <= 8; i++) {
 
 // Sound effects (ElevenLabs-generated, Tiny Swords pixel style). Loaded as
 // `sfx_<name>`; played through game/audio.ts.
-export const SFX = ['ui_click', 'build_place', 'unit_recruit', 'coins_gold', 'sword_clash', 'sword_clash2', 'sword_clash3', 'sword_clash4', 'bow_shot', 'bow_shot2', 'building_destroyed', 'victory', 'ambient_loop'] as const;
+export const SFX = ['ui_click', 'build_place', 'unit_recruit', 'coins_gold', 'sword_clash', 'sword_clash2', 'sword_clash3', 'sword_clash4', 'bow_shot', 'bow_shot2', 'building_destroyed', 'victory', 'ambient_loop', 'music_bed', 'beat_drum'] as const;
 
 export function preloadAssets(scene: Phaser.Scene): void {
   SHEETS.forEach(s => scene.load.spritesheet(s.key, s.url, { frameWidth: s.frameWidth, frameHeight: s.frameHeight }));

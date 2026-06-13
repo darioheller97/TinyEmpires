@@ -14,11 +14,15 @@ export function initAudio(s: Phaser.Scene): void {
   s.sound.mute = muted;
 }
 
-/** Start the looping overworld ambience (once, after a user gesture). */
+/** Start the looping overworld music (once, after a user gesture). */
 export function startAmbient(): void {
-  if (ambientStarted || !scene || !scene.cache.audio.exists('sfx_ambient_loop')) return;
+  if (ambientStarted || !scene) return;
+  // Prefer the cozy medieval music bed; fall back to the old nature ambience.
+  const key = scene.cache.audio.exists('sfx_music_bed') ? 'sfx_music_bed'
+    : scene.cache.audio.exists('sfx_ambient_loop') ? 'sfx_ambient_loop' : null;
+  if (!key) return;
   ambientStarted = true;
-  try { scene.sound.add('sfx_ambient_loop', { loop: true, volume: 0.18 }).play(); } catch { /* ignore */ }
+  try { scene.sound.add(key, { loop: true, volume: 0.22 }).play(); } catch { /* ignore */ }
 }
 
 /**

@@ -148,6 +148,12 @@ export default class GameScene extends Phaser.Scene {
         c.setData('beatAt', time);
         const ddx = pos.x - c.x;
         if (Math.abs(ddx) > 0.8) u.sprite.setFlipX(ddx < 0);
+        // The drum pulse is driven by the actual unit hop, not a free-running
+        // clock, so it's always exactly on the beat the troops move to. The
+        // shared throttle collapses the whole marching column into one hit.
+        if (Math.hypot(pos.x - (c.getData('hopFrom') as { x: number }).x, pos.y - (c.getData('hopFrom') as { y: number }).y) > 4) {
+          playSfx('beat_drum', { volume: 0.3, throttleMs: 600, throttleKey: 'beat' });
+        }
       }
       const from = c.getData('hopFrom') as { x: number; y: number };
       const to = c.getData('hopTo') as { x: number; y: number };
