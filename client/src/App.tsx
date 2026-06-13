@@ -47,8 +47,12 @@ const ICON_BTN: React.CSSProperties = {
 const BUILD_OPTIONS: BuildOption[] = [
   { type: 'house', name: 'House (+5 pop)', cost: { wood: 25, food: 10, gold: 0 } },
   { type: 'barracks', name: 'Barracks', cost: { wood: 50, food: 20, gold: 10 } },
+  { type: 'archery', name: 'Archery', cost: { wood: 50, food: 15, gold: 15 } },
+  { type: 'church', name: 'Church', cost: { wood: 45, food: 25, gold: 20 } },
   { type: 'defense_tower', name: 'Defense Tower', cost: { wood: 60, food: 15, gold: 20 } },
 ];
+
+const PRODUCER_TYPES = ['barracks', 'archery', 'church'];
 
 const TECH_OPTIONS: TechOption[] = [
   { id: 'dmg_knight', name: 'Knight Training', desc: '+25% Knight damage', cost: 50, category: 'unit' },
@@ -201,7 +205,7 @@ export default function App() {
     && selection.data.ownerId === mySessionId;
   const selectionData = selection.data || {};
   const buildingCount = selection.type === 'city' ? (buildingCounts.get(selection.id) || 0) : 0;
-  const isBarracksSelected = selection.type === 'building' && selection.name === 'barracks';
+  const isProducerSelected = selection.type === 'building' && PRODUCER_TYPES.includes(selection.name);
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
@@ -253,9 +257,10 @@ export default function App() {
             onHireVillager={handleHireVillager}
           />
           <SpawnPanel
-            visible={isBarracksSelected}
+            visible={isProducerSelected}
+            producer={isProducerSelected ? selection.name : ''}
             resources={resources}
-            autoProduceType={isBarracksSelected ? (selectionData.autoProduceType || '') : ''}
+            autoProduceType={isProducerSelected ? (selectionData.autoProduceType || '') : ''}
             onSpawn={handleSpawn}
             onSetAutoProduce={handleSetAutoProduce}
           />

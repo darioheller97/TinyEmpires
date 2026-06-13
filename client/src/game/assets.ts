@@ -136,6 +136,7 @@ FACTION_COLORS.forEach(c => {
     { key: `barracks2_${c}`, url: `${A2}/Buildings/${c}/Barracks.png` },
     { key: `tower2_${c}`, url: `${A2}/Buildings/${c}/Tower.png` },
     { key: `archery_${c}`, url: `${A2}/Buildings/${c}/Archery.png` },
+    { key: `monastery_${c}`, url: `${A2}/Buildings/${c}/Monastery.png` },
     { key: `house2a_${c}`, url: `${A2}/Buildings/${c}/House1.png` },
     { key: `house2b_${c}`, url: `${A2}/Buildings/${c}/House2.png` },
     { key: `house2c_${c}`, url: `${A2}/Buildings/${c}/House3.png` },

@@ -73,6 +73,7 @@ export default class GameScene extends Phaser.Scene {
   private lairHealthBars: Map<string, Phaser.GameObjects.Container> = new Map();
   private selectionRing: Phaser.GameObjects.Graphics | null = null;
   private selMarker: Phaser.GameObjects.Container | null = null;
+  private selMarkerKey = '';
   private glowTarget: Phaser.GameObjects.Container | null = null;
   private glowTween: Phaser.Tweens.Tween | null = null;
   private towerPlace: { cityId: string; cx: number; cy: number; radius: number; ghost: Phaser.GameObjects.Container; tower: Phaser.GameObjects.Image; ring: Phaser.GameObjects.Graphics; highlight: Phaser.GameObjects.Graphics } | null = null;
@@ -494,6 +495,10 @@ export default class GameScene extends Phaser.Scene {
       container.add(this.add.image(0, 0, `${variant}_${color}`).setScale(0.55).setOrigin(0.5, 0.72));
     } else if (b.type === 'barracks') {
       container.add(this.add.image(0, 0, `barracks2_${color}`).setScale(0.5).setOrigin(0.5, 0.7));
+    } else if (b.type === 'archery') {
+      container.add(this.add.image(0, 0, `archery_${color}`).setScale(0.5).setOrigin(0.5, 0.7));
+    } else if (b.type === 'church') {
+      container.add(this.add.image(0, 0, `monastery_${color}`).setScale(0.5).setOrigin(0.5, 0.7));
     } else { // defense_tower — pack tower with an archer posted on top
       container.add(this.add.image(0, 0, `tower2_${color}`).setScale(0.5).setOrigin(0.5, 0.72));
       const ar = this.add.sprite(0, -34, `u_${color}_archer_idle`).setScale(0.4);
@@ -1023,39 +1028,41 @@ export default class GameScene extends Phaser.Scene {
 
   private redrawSelectionRing(): void {
     if (!this.selectionRing) return;
-    this.selectionRing.clear();
-    this.clearGlow();
-    this.clearSelMarker();
     const { type, id, data } = this.selection;
-    if (!data) return;
-    this.selectionRing.lineStyle(2, 0xffff00, 0.9);
-    // Corner-bracket marker sized to the kind of thing selected.
-    const half = type === 'city' ? 80 : type === 'building' ? 48 : type === 'intersection' ? 30 : 36;
-    this.showSelMarker(data.x, data.y, half);
-    if (type === 'city') {
+    // The marker + glow only change when the *selection* changes — rebuilding
+    // them (and their tweens) on every state sync caused a stutter. Gate on a
+    // selection key; the influence overlay below still refreshes each sync.
+    const key = data ? `${type}:${id}` : '';
+    if (key !== this.selMarkerKey) {
+      this.clearSelMarker();
+      this.clearGlow();
+      this.selMarkerKey = key;
+      if (data) {
+        const half = type === 'city' ? 80 : type === 'building' ? 48 : type === 'intersection' ? 30 : 36;
+        this.showSelMarker(data.x, data.y, half);
+        if (type === 'city') this.setGlow(this.cityGfx.get(id)?.gfx);
+        else if (type === 'building') this.setGlow(this.buildingGfx.get(id)?.gfx);
+      }
+    }
+    this.selectionRing.clear();
+    if (data && type === 'city' && this.terrainInfo) {
       // Influence zone as terrain tiles (land cells within radius)
-      if (this.terrainInfo) {
-        const { grid, cols, rows } = this.terrainInfo;
-        const rad = data.influenceRadius;
-        this.selectionRing.fillStyle(0xffe87a, 0.16);
-        const c0 = Math.max(0, Math.floor((data.x - rad) / TILE));
-        const c1 = Math.min(cols - 1, Math.floor((data.x + rad) / TILE));
-        const r0 = Math.max(0, Math.floor((data.y - rad) / TILE));
-        const r1 = Math.min(rows - 1, Math.floor((data.y + rad) / TILE));
-        for (let r = r0; r <= r1; r++) {
-          for (let c = c0; c <= c1; c++) {
-            if (grid[r][c] === WATER) continue;
-            const cx = c * TILE + TILE / 2, cy = r * TILE + TILE / 2;
-            if (Math.hypot(cx - data.x, cy - data.y) > rad) continue;
-            this.selectionRing.fillRect(c * TILE + 2, r * TILE + 2, TILE - 4, TILE - 4);
-          }
+      const { grid, cols, rows } = this.terrainInfo;
+      const rad = data.influenceRadius;
+      this.selectionRing.fillStyle(0xffe87a, 0.16);
+      const c0 = Math.max(0, Math.floor((data.x - rad) / TILE));
+      const c1 = Math.min(cols - 1, Math.floor((data.x + rad) / TILE));
+      const r0 = Math.max(0, Math.floor((data.y - rad) / TILE));
+      const r1 = Math.min(rows - 1, Math.floor((data.y + rad) / TILE));
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          if (grid[r][c] === WATER) continue;
+          const cx = c * TILE + TILE / 2, cy = r * TILE + TILE / 2;
+          if (Math.hypot(cx - data.x, cy - data.y) > rad) continue;
+          this.selectionRing.fillRect(c * TILE + 2, r * TILE + 2, TILE - 4, TILE - 4);
         }
       }
-      this.setGlow(this.cityGfx.get(id)?.gfx); // influence tiles + corner marker
-    } else if (type === 'building') {
-      this.setGlow(this.buildingGfx.get(id)?.gfx); // glow + corner marker
     }
-    // resource / intersection: the corner marker alone frames them.
   }
 
   private clearSelection(): void {
@@ -1063,6 +1070,7 @@ export default class GameScene extends Phaser.Scene {
     this.selection = { type: 'none', id: '', name: '' };
     if (this.selectionRing) this.selectionRing.clear();
     this.clearSelMarker();
+    this.selMarkerKey = '';
     this.clearGlow();
     const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void);
     if (onSelection) onSelection({ ...this.selection });

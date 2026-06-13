@@ -4,7 +4,7 @@ import { Player, TECH_TREE } from './schema/Player';
 import { CityNode } from './schema/CityNode';
 import { IntersectionNode, Waypoint } from './schema/IntersectionNode';
 import { Road } from './schema/Road';
-import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS } from './schema/BuildingNode';
+import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS, PRODUCES, producerFor } from './schema/BuildingNode';
 import { ResourceNode, ResourceType, HARVEST_RATE } from './schema/ResourceNode';
 import { LairNode } from './schema/LairNode';
 import { UnitNode, TROOP_STATS, TROOP_TYPES } from './schema/UnitNode';
@@ -36,8 +36,10 @@ const VILLAGER_SEARCH_RADIUS = 1400;  // from home city
 const VILLAGER_CARRY_CAP = 9;         // units hauled before a villager returns home
 const SHEEP_REGEN_INTERVAL_TICKS = 30; // ~3s between sheep flock growth
 const SHEEP_REGEN_AMOUNT = 2;          // food units regrown per interval
+const GOLD_REGEN_AMOUNT = 3;           // gold a vein slowly refills per interval
 const ARCHER_DEF_RANGE = 280;          // how far tower/capital archers can shoot
 const ARCHER_DEF_DMG = 13;             // per archer shot (before armour)
+const PVE_KILL_GOLD = 4;               // tiny gold a slain monster drops to its killer
 const TREE_GROW_INTERVAL_TICKS = 50;   // ~5s between tree growth ticks
 const TREE_AGE_CAP = 40;               // older trees hold more wood, to this cap
 
@@ -441,8 +443,10 @@ export class GameRoom extends Room<GameState> {
     if (!city || city.ownerId !== player.id) return false;
     if (player.food < stats.foodCost || player.gold < stats.goldCost) return false;
     if (player.populationUsed + 1 > player.populationCap) return false;
-    const barracks = this.buildingsOf(city.id).find(b => b.type === 'barracks');
-    if (!barracks) return false;
+    // Each unit is trained at its own production building (barracks = knights/
+    // lancers, archery = archers, church = monks).
+    const prod = producerFor(type);
+    if (!prod || !this.buildingsOf(city.id).some(b => b.type === prod)) return false;
     const exits = [...this.state.roads.values()].filter(r => r.fromId === city.id);
     const targetRoad = exits.find(r => r.id === city.rallyRoadId) || exits[0];
     if (!targetRoad) return false;
@@ -543,7 +547,9 @@ export class GameRoom extends Room<GameState> {
 
   private processAutoProduce(): void {
     this.state.buildings.forEach(b => {
-      if (b.type !== 'barracks' || !b.autoProduceType) return;
+      const makes = PRODUCES[b.type];
+      if (!makes || !b.autoProduceType) return;
+      if (!makes.includes(b.autoProduceType)) { b.autoProduceType = ''; return; } // not trainable here
       if (this.state.tick - b.lastAutoProduceTick < AUTO_PRODUCE_INTERVAL_TICKS) return;
       const city = this.state.cities.get(b.cityId);
       if (!city || !city.ownerId) { b.autoProduceType = ''; return; }
@@ -679,10 +685,11 @@ export class GameRoom extends Room<GameState> {
         const take = Math.min(3, target.amount, VILLAGER_CARRY_CAP - unit.carrying);
         unit.carrying += take;
         target.amount -= take;
-        // Sheep regrow (processSheepRegen) and trees regrow as saplings
-        // (processTreeGrowth); only gold deposits are exhausted for good.
+        // Everything regrows now: sheep + gold via processSheepRegen, trees
+        // reset to saplings via processTreeGrowth — depleted gold deposits stay
+        // on the map at 0 and slowly refill rather than vanishing for good.
         if (target.amount <= 0) {
-          if (target.type === 'gold') { this.state.resources.delete(target.id); unit.targetResourceId = ''; }
+          if (target.type === 'gold') { unit.targetResourceId = ''; }
           else if (target.type === 'tree') { target.age = 0; unit.targetResourceId = ''; } // chopped → sapling
         }
       }
@@ -705,6 +712,8 @@ export class GameRoom extends Room<GameState> {
     this.state.resources.forEach(r => {
       if (r.type === 'sheep' && r.amount < r.maxAmount) {
         r.amount = Math.min(r.maxAmount, r.amount + SHEEP_REGEN_AMOUNT);
+      } else if (r.type === 'gold' && r.amount < r.maxAmount) {
+        r.amount = Math.min(r.maxAmount, r.amount + GOLD_REGEN_AMOUNT); // veins slowly refill
       }
     });
   }
@@ -833,13 +842,21 @@ export class GameRoom extends Room<GameState> {
     if (!city) { toRemove.push(unit.id); this.refundPop(unit.ownerId); return; }
 
     if (city.ownerId === unit.ownerId) {
-      // Home turf: garrison if there are besiegers to fight, otherwise stand down
+      // Friendly/captured fort: defend if it's under siege, otherwise march on
+      // through toward the front. At a dead-end spur, turn back instead of
+      // despawning so troops keep patrolling rather than vanishing.
       const besiegers = this.unitsAtNode(cityId).filter(u => u.ownerId !== unit.ownerId);
       if (besiegers.length > 0) {
         unit.t = 1; unit.status = 'defending'; unit.atNodeId = cityId;
+        return;
+      }
+      const road = this.state.roads.get(unit.roadId);
+      let next = road ? this.findNextRoad(unit, road, cityId) : null;
+      if (!next && road) next = this.state.roads.get(this.reverseRoad.get(road.id) || '') || null;
+      if (next) {
+        unit.roadId = next.id; unit.t = 0; unit.originNodeId = cityId; unit.roadsCrossed++;
       } else {
-        toRemove.push(unit.id);
-        this.refundPop(unit.ownerId);
+        toRemove.push(unit.id); this.refundPop(unit.ownerId);
       }
       return;
     }
@@ -942,6 +959,8 @@ export class GameRoom extends Room<GameState> {
   private processCombat(): void {
     // Re-evaluate engagements every tick (villagers manage their own status)
     this.state.units.forEach(u => { if (u.status === 'fighting' && u.type !== 'villager') u.status = 'marching'; });
+    // Blows land on the beat so combat reads rhythmically with the march/music.
+    const onBeat = this.state.tick % MOVE_BEAT_TICKS === 0;
 
     const groups = new Map<string, UnitNode[]>();
     this.state.units.forEach(u => {
@@ -971,17 +990,17 @@ export class GameRoom extends Room<GameState> {
           const bCanHit = tileGap <= bReach;
           if (!aCanHit && !bCanHit) continue; // still out of range — keep marching to close
 
-          const aReady = this.state.tick - a.lastCombatTick >= COMBAT_COOLDOWN_TICKS;
-          const bReady = this.state.tick - b.lastCombatTick >= COMBAT_COOLDOWN_TICKS;
+          const aReady = onBeat && this.state.tick - a.lastCombatTick >= COMBAT_COOLDOWN_TICKS;
+          const bReady = onBeat && this.state.tick - b.lastCombatTick >= COMBAT_COOLDOWN_TICKS;
           // A unit only stops to fight when it can actually strike; one that's
           // being shot from afar keeps advancing until it's in melee range.
           if (aCanHit) {
             if (!a.atNodeId) a.status = 'fighting';
-            if (aReady) { b.health = Math.max(0, b.health - this.calcDamage(a, b)); a.lastCombatTick = this.state.tick; }
+            if (aReady) { b.health = Math.max(0, b.health - this.calcDamage(a, b)); a.lastCombatTick = this.state.tick; if (b.health <= 0) this.awardKillGold(a, b); }
           }
           if (bCanHit) {
             if (!b.atNodeId) b.status = 'fighting';
-            if (bReady) { a.health = Math.max(0, a.health - this.calcDamage(b, a)); b.lastCombatTick = this.state.tick; }
+            if (bReady) { a.health = Math.max(0, a.health - this.calcDamage(b, a)); b.lastCombatTick = this.state.tick; if (a.health <= 0) this.awardKillGold(b, a); }
           }
           if (a.health <= 0) dead.add(a.id);
           if (b.health <= 0) dead.add(b.id);
@@ -1122,10 +1141,14 @@ export class GameRoom extends Room<GameState> {
       // archersShoot treats everyone (PvE and players alike) as a target.
       const defId = claimed ? city.ownerId : '__neutral__';
       const owner = claimed ? this.state.players.get(city.ownerId) : undefined;
-      const dmg = ARCHER_DEF_DMG * (owner?.hasTech('dmg_archer') ? 1.25 : 1);
-      this.archersShoot(city.x, city.y, defId, 2, dmg);                  // capital: 2 archers
+      const techMul = owner?.hasTech('dmg_archer') ? 1.25 : 1;
+      // The fortress-top archers are a weak last-ditch defence: 50% of a normal
+      // field archer's punch. Dedicated defense towers keep their full bite.
+      const capitalDmg = Math.max(1, Math.round(TROOP_STATS.archer.attack * 0.5 * techMul));
+      const towerDmg = ARCHER_DEF_DMG * techMul;
+      this.archersShoot(city.x, city.y, defId, 2, capitalDmg);           // capital: 2 weak archers
       if (claimed) this.buildingsOf(city.id).forEach(b => {              // towers need an owner to exist
-        if (b.type === 'defense_tower') this.archersShoot(b.x, b.y, defId, 1, dmg); // tower: 1
+        if (b.type === 'defense_tower') this.archersShoot(b.x, b.y, defId, 1, towerDmg); // tower: 1
       });
     });
   }
@@ -1146,9 +1169,17 @@ export class GameRoom extends Room<GameState> {
       t.health = Math.max(0, t.health - Math.max(1, Math.floor(dmg - armor)));
       if (t.health <= 0) {
         if (!t.isPvE) this.refundPop(t.ownerId);
+        else { const p = this.state.players.get(ownerId); if (p) p.gold += PVE_KILL_GOLD; } // bounty to the defending player
         this.state.units.delete(t.id);
       }
     }
+  }
+
+  // A slain monster drops a little gold to the player who killed it.
+  private awardKillGold(killer: UnitNode, victim: UnitNode): void {
+    if (!victim.isPvE || killer.isPvE) return;
+    const p = this.state.players.get(killer.ownerId);
+    if (p) p.gold += PVE_KILL_GOLD;
   }
 
   private siegeLair(lair: LairNode, besiegers: UnitNode[]): void {

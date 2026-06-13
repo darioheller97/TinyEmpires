@@ -211,7 +211,9 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   // Never start a cliff on a road, nor drop one onto a road tile below.
   const southCoast = (r: number, c: number) => isLand(r, c) && grid[r][c] !== SAND && !isLand(r + 1, c);
   const platDrop = (r: number, c: number) => isElev(r, c) && isLand(r + 1, c) && !isElev(r + 1, c) && !isSand(r + 1, c);
-  const cliffHere = (r: number, c: number) => southCoast(r, c) || platDrop(r, c);
+  // Cliffs only for inland plateaus/mountains now — coastlines just meet the
+  // water with the grass blob edge + foam, no rocky stair faces along the sea.
+  const cliffHere = (r: number, c: number) => platDrop(r, c);
   // Frames for a cliff cell: [grass cap (base pass), rocky face (face pass)].
   // The diagonal corner pieces (36/45 left, 39/48 right) are mostly transparent
   // — they cascade grass down toward open sea. Only round off a run-end whose

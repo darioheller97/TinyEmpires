@@ -10,11 +10,20 @@ export interface SpawnOption {
 
 interface Props {
   visible: boolean;
+  producer: string; // building type: barracks | archery | church
   resources: { food: number; gold: number; popUsed: number; popCap: number };
   autoProduceType: string;
   onSpawn: (type: string) => void;
   onSetAutoProduce: (troopType: string) => void;
 }
+
+// What each production building can train, and its display name.
+const PRODUCES: Record<string, string[]> = {
+  barracks: ['knight', 'lancer'],
+  archery: ['archer'],
+  church: ['monk'],
+};
+const PRODUCER_NAMES: Record<string, string> = { barracks: 'Barracks', archery: 'Archery', church: 'Church' };
 
 const WRAP: React.CSSProperties = {
   ...PANEL,
@@ -51,16 +60,19 @@ const SPAWN_OPTIONS: SpawnOption[] = [
   { type: 'monk', name: 'Monk', foodCost: 25, goldCost: 10 },
 ];
 
-export default function SpawnPanel({ visible, resources, autoProduceType, onSpawn, onSetAutoProduce }: Props) {
+export default function SpawnPanel({ visible, producer, resources, autoProduceType, onSpawn, onSetAutoProduce }: Props) {
   if (!visible) return null;
+  const allowed = PRODUCES[producer] || [];
+  const options = SPAWN_OPTIONS.filter(o => allowed.includes(o.type));
+  if (options.length === 0) return null;
 
   return (
     <div style={WRAP}>
-      <div style={{ ...RIBBON, fontSize: '13px' }}>Barracks</div>
+      <div style={{ ...RIBBON, fontSize: '13px' }}>{PRODUCER_NAMES[producer] || 'Train'}</div>
       <div style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px' }}>
         Pop {resources.popUsed}/{resources.popCap} · ⟳ auto-trains every 6s
       </div>
-      {SPAWN_OPTIONS.map((opt) => {
+      {options.map((opt) => {
         const enabled = resources.food >= opt.foodCost && resources.gold >= opt.goldCost
           && resources.popUsed < resources.popCap;
         const autoOn = autoProduceType === opt.type;
