@@ -49,9 +49,13 @@ export interface SelectionInfo {
 
 export interface MinimapData {
   width: number; height: number;
+  // Fog mask: cols*rows bytes (0 unexplored, 1 explored, 2 visible) + grid dims.
+  cols: number; rows: number; tile: number;
+  fog: Uint8Array | null;
   cities: { x: number; y: number; color: string }[];
   lairs: { x: number; y: number; type: string; alive: boolean }[];
-  roads: { x1: number; y1: number; x2: number; y2: number }[];
+  // Full curved road geometry (spline points), so the minimap traces real paths.
+  roads: { pts: { x: number; y: number }[] }[];
 }
 
 const DEPTH_ENTITY = 10; // + y*0.01 for painter's order
@@ -107,6 +111,7 @@ export default class GameScene extends Phaser.Scene {
   private fogGfx: Phaser.GameObjects.Graphics | null = null;
   private lastFogUpdate = 0;
   private cloudSprites: { sprite: Phaser.GameObjects.Sprite; tile: number }[] = [];
+  private minimapRoads: { pts: { x: number; y: number }[] }[] | null = null;
 
   constructor() { super({ key: 'GameScene' }); }
 
@@ -858,6 +863,15 @@ export default class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: g, alpha: 0, duration: 2200, ease: 'Power2', onComplete: () => g.destroy() });
   }
 
+  // Quick hit-flash: a white tint pop on a unit that just took damage.
+  private flashUnit(id: string): void {
+    const u = this.unitGfx.get(id);
+    if (!u || !u.container.visible) return;
+    const spr = u.sprite;
+    spr.setTintFill(0xffffff);
+    this.time.delayedCall(90, () => { if (spr.active) spr.clearTint(); });
+  }
+
   private removeUnitVisual(id: string, died: boolean): void {
     const u = this.unitGfx.get(id);
     if (!u) return;
@@ -1001,6 +1015,58 @@ export default class GameScene extends Phaser.Scene {
       targets: txt, y: y - 56, alpha: 0, duration: 800, ease: 'Power2',
       onComplete: () => txt.destroy(),
     });
+  }
+
+  /** Shake the camera, but only when the event is on (or near) screen. */
+  private shakeAt(x: number, y: number, intensity: number, duration: number): void {
+    const v = this.cameras.main.worldView;
+    const pad = 200;
+    if (x < v.x - pad || x > v.right + pad || y < v.y - pad || y > v.bottom + pad) return;
+    this.cameras.main.shake(duration, intensity);
+  }
+
+  // Big celebratory/ominous flourish when a fort changes hands: a colour shockwave,
+  // a smoke burst, a rising banner, a screen shake and a sting.
+  private captureFlourish(x: number, y: number, colorHex: string, mine: boolean, loud: boolean): void {
+    const tint = Phaser.Display.Color.HexStringToColor(colorHex || '#ffffff').color;
+
+    // Expanding shockwave ring in the new owner's colour.
+    const ring = this.add.graphics().setDepth(205);
+    const ringObj = { r: 20, a: 1 };
+    this.tweens.add({
+      targets: ringObj, r: 180, a: 0, duration: 700, ease: 'Cubic.Out',
+      onUpdate: () => { ring.clear(); ring.lineStyle(5, tint, ringObj.a).strokeCircle(x, y, ringObj.r); },
+      onComplete: () => ring.destroy(),
+    });
+
+    // Smoke/explosion burst at the keep.
+    if (this.textures.exists('explosion')) {
+      const boom = this.add.sprite(x, y - 20, 'explosion').setScale(1.3).setDepth(206);
+      boom.play('explosion_anim');
+      boom.once('animationcomplete', () => boom.destroy());
+    }
+
+    // Quiet variant (a distant, scouted capture): just the visual pop.
+    if (!loud) {
+      playSfx('building_destroyed', { volume: 0.3, x, y, throttleMs: 200, throttleKey: 'capture' });
+      return;
+    }
+
+    // Rising banner — only when the capture involves the player.
+    const label = mine ? 'Fortress Captured!' : 'Fortress Lost!';
+    const banner = this.add.text(x, y - 70, label, {
+      fontSize: '20px', color: mine ? '#ffe87a' : '#ff6a5a', fontFamily: '"Trebuchet MS", Verdana, sans-serif',
+      fontStyle: 'bold', stroke: '#241405', strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(210).setScale(0.4);
+    this.tweens.add({ targets: banner, scale: 1, duration: 260, ease: 'Back.Out' });
+    this.tweens.add({
+      targets: banner, y: y - 120, alpha: 0, delay: 900, duration: 700, ease: 'Power2',
+      onComplete: () => banner.destroy(),
+    });
+
+    this.shakeAt(x, y, mine ? 0.008 : 0.006, 380);
+    playSfx('building_destroyed', { volume: 0.5, x, y });
+    playSfx(mine ? 'unit_recruit' : 'coins_gold', { volume: 0.6, x, y });
   }
 
   // ── Selection ──────────────────────────────────────────────
@@ -1230,10 +1296,20 @@ export default class GameScene extends Phaser.Scene {
       this.buildMapFromState(state);
     }
 
+    const myId = this.client?.sessionId;
     state.cities.forEach((s: any, id: string) => {
       const entry = this.cityGfx.get(id);
       if (!entry) return;
       const prevHealth = entry.data.health;
+      const prevOwner = entry.data.ownerId;
+      // A fort changed hands — celebrate (or mourn) it.
+      if (prevOwner !== s.ownerId) {
+        const newReal = s.ownerId && s.ownerId !== 'pve';
+        const mine = !!myId && s.ownerId === myId;
+        const involved = (!!myId && (s.ownerId === myId || prevOwner === myId));
+        const color = newReal ? (this.playerColors.get(s.ownerId) || '#cccccc') : '#9aa3ad';
+        this.captureFlourish(entry.data.x, entry.data.y, color, mine, involved);
+      }
       entry.data.ownerId = s.ownerId;
       entry.data.townHallLevel = s.townHallLevel;
       entry.data.influenceRadius = s.influenceRadius;
@@ -1299,6 +1375,7 @@ export default class GameScene extends Phaser.Scene {
       if (prevHp > u.health) {
         const pos = this.getUnitWorldPos(u);
         if (pos) this.showFloatingDamage(pos.x, pos.y, prevHp - u.health);
+        this.flashUnit(u.id);
       }
       this.prevUnitHealth.set(u.id, u.health);
       this.syncUnit(u);
@@ -1312,7 +1389,6 @@ export default class GameScene extends Phaser.Scene {
       }
     });
 
-    const myId = this.client?.sessionId;
     if (myId && state.players) {
       const me = state.players.get(myId);
       if (me) {
@@ -1332,7 +1408,25 @@ export default class GameScene extends Phaser.Scene {
 
     const onMinimapData = this.game.registry.get('onMinimapData') as ((d: MinimapData) => void) | undefined;
     if (onMinimapData) {
-      const data: MinimapData = { width: this.mapW, height: this.mapH, cities: [], lairs: [], roads: [] };
+      // Curved road polylines never change after the map is built — cache once.
+      if (!this.minimapRoads) {
+        const roads: { pts: { x: number; y: number }[] }[] = [];
+        const seen = new Set<string>();
+        this.roadsById.forEach(r => {
+          const key = [r.fromId, r.toId].sort().join('|');
+          if (seen.has(key)) return;
+          seen.add(key);
+          roads.push({ pts: r.splinePoints.map(p => ({ x: p.x, y: p.y })) });
+        });
+        this.minimapRoads = roads;
+      }
+      const ti = this.terrainInfo;
+      const data: MinimapData = {
+        width: this.mapW, height: this.mapH,
+        cols: ti?.cols ?? 0, rows: ti?.rows ?? 0, tile: TILE,
+        fog: this.fogState,
+        cities: [], lairs: [], roads: this.minimapRoads,
+      };
       this.cityGfx.forEach(entry => {
         data.cities.push({
           x: entry.data.x, y: entry.data.y,
@@ -1341,14 +1435,6 @@ export default class GameScene extends Phaser.Scene {
       });
       this.lairGfx.forEach(entry => {
         data.lairs.push({ x: entry.data.x, y: entry.data.y, type: entry.data.type, alive: entry.data.health > 0 });
-      });
-      const seen = new Set<string>();
-      this.roadsById.forEach(r => {
-        const key = [r.fromId, r.toId].sort().join('|');
-        if (seen.has(key)) return;
-        seen.add(key);
-        const a = r.splinePoints[0], b = r.splinePoints[r.splinePoints.length - 1];
-        data.roads.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y });
       });
       onMinimapData(data);
     }

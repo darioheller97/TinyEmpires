@@ -1,5 +1,6 @@
 import React, { CSSProperties } from 'react';
 import { PANEL, BUTTON_GREEN } from './skin';
+import { playSfx } from '../game/audio';
 
 interface Props {
   won: boolean;
@@ -13,6 +14,10 @@ const OVERLAY: CSSProperties = {
 const CARD: CSSProperties = { ...PANEL, width: 360, padding: '24px 30px 28px', textAlign: 'center' };
 
 export default function EndScreen({ won, onBackToMenu }: Props) {
+  React.useEffect(() => {
+    if (won) playSfx('victory', { volume: 0.7 });
+    else playSfx('building_destroyed', { volume: 0.55 });
+  }, [won]);
   return (
     <div style={OVERLAY}>
       <div style={CARD}>

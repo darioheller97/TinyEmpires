@@ -28,6 +28,8 @@ const CANVAS_STYLE: React.CSSProperties = {
 
 export default function Minimap({ data, onNavigate }: Props) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  // Offscreen fog buffer at tile resolution, scaled up onto the minimap.
+  const fogCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -41,17 +43,36 @@ export default function Minimap({ data, onNavigate }: Props) {
 
     const scaleX = MINIMAP_W / data.width;
     const scaleY = MINIMAP_H / data.height;
+    const fog = data.fog;
+    const { cols, rows, tile } = data;
+    const fogAt = (x: number, y: number): number => {
+      if (!fog || cols === 0) return 2; // no fog yet ⇒ treat as visible
+      const c = Math.floor(x / tile), r = Math.floor(y / tile);
+      if (c < 0 || c >= cols || r < 0 || r >= rows) return 0;
+      return fog[r * cols + c];
+    };
 
-    ctx.strokeStyle = '#8b6f47';
+    // Curved roads, traced point-to-point; segments touching unexplored ground
+    // are skipped so the map only reveals paths you've actually scouted.
     ctx.lineWidth = 2;
-    data.roads.forEach(r => {
-      ctx.beginPath();
-      ctx.moveTo(r.x1 * scaleX, r.y1 * scaleY);
-      ctx.lineTo(r.x2 * scaleX, r.y2 * scaleY);
-      ctx.stroke();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    data.roads.forEach(road => {
+      const pts = road.pts;
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        const fa = fogAt(a.x, a.y), fb = fogAt(b.x, b.y);
+        if (fa === 0 || fb === 0) continue; // hidden under fog
+        ctx.strokeStyle = (fa === 2 || fb === 2) ? '#b08a55' : '#6b5436'; // bright if in sight
+        ctx.beginPath();
+        ctx.moveTo(a.x * scaleX, a.y * scaleY);
+        ctx.lineTo(b.x * scaleX, b.y * scaleY);
+        ctx.stroke();
+      }
     });
 
     data.lairs.forEach(l => {
+      if (fogAt(l.x, l.y) === 0) return;
       ctx.fillStyle = l.alive ? (l.type === 'spider' ? '#aa88ff' : '#88cc44') : '#444444';
       ctx.beginPath();
       ctx.arc(l.x * scaleX, l.y * scaleY, 3, 0, Math.PI * 2);
@@ -59,12 +80,37 @@ export default function Minimap({ data, onNavigate }: Props) {
     });
 
     data.cities.forEach(c => {
+      if (fogAt(c.x, c.y) === 0) return; // unscouted forts stay hidden
       ctx.fillStyle = c.color;
       ctx.fillRect(c.x * scaleX - 3, c.y * scaleY - 3, 6, 6);
       ctx.strokeStyle = '#000';
       ctx.lineWidth = 1;
       ctx.strokeRect(c.x * scaleX - 3, c.y * scaleY - 3, 6, 6);
     });
+
+    // Fog veil: build it at tile resolution offscreen, then stretch over the map.
+    // Unexplored = opaque dark, explored-but-unwatched = dim, visible = clear.
+    if (fog && cols > 0 && rows > 0) {
+      let fc = fogCanvasRef.current;
+      if (!fc) { fc = document.createElement('canvas'); fogCanvasRef.current = fc; }
+      if (fc.width !== cols || fc.height !== rows) { fc.width = cols; fc.height = rows; }
+      const fctx = fc.getContext('2d');
+      if (fctx) {
+        const img = fctx.createImageData(cols, rows);
+        const d = img.data;
+        for (let i = 0; i < fog.length; i++) {
+          const s = fog[i];
+          const o = i * 4;
+          d[o] = 8; d[o + 1] = 18; d[o + 2] = 30; // 0x081222 veil tint
+          d[o + 3] = s === 0 ? 235 : s === 1 ? 110 : 0;
+        }
+        fctx.putImageData(img, 0, 0);
+        const prevSmooth = ctx.imageSmoothingEnabled;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(fc, 0, 0, cols, rows, 0, 0, MINIMAP_W, MINIMAP_H);
+        ctx.imageSmoothingEnabled = prevSmooth;
+      }
+    }
   }, [data]);
 
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
