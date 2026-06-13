@@ -11,6 +11,7 @@ import TechTreeModal, { TechOption } from './ui/TechTreeModal';
 import MainMenu from './ui/MainMenu';
 import Lobby, { LobbyView, LobbyPlayer } from './ui/Lobby';
 import EndScreen from './ui/EndScreen';
+import HowToPlay from './ui/HowToPlay';
 import { PANEL as SKIN_PANEL } from './ui/skin';
 import { GameClient, MatchSettings } from './network/GameClient';
 import { playSfx, toggleMute } from './game/audio';
@@ -88,6 +89,7 @@ export default function App() {
   const [minimapData, setMinimapData] = useState<MinimapData | null>(null);
   const [events, setEvents] = useState<FeedItem[]>([]);
   const [pings, setPings] = useState<MinimapPing[]>([]);
+  const [showHelp, setShowHelp] = useState(false);
   const [muted, setMuted] = useState(false);
   const sceneRef = useRef<GameScene | null>(null);
   const prevGold = useRef(20);
@@ -110,6 +112,17 @@ export default function App() {
     if (roomPhase === 'lobby') setAppPhase('lobby');
     else if (roomPhase === 'active' || roomPhase === 'finished') setAppPhase('game');
   }, [roomPhase]);
+
+  // First-ever match: pop the How-to-Play card once, then remember it was seen.
+  useEffect(() => {
+    if (appPhase !== 'game') return;
+    try {
+      if (!localStorage.getItem('te_seen_intro')) {
+        setShowHelp(true);
+        localStorage.setItem('te_seen_intro', '1');
+      }
+    } catch { /* ignore */ }
+  }, [appPhase]);
 
   const backToMenu = useCallback(() => {
     clientRef.current?.disconnect();
@@ -253,6 +266,11 @@ export default function App() {
           >
             <img src="/assets2/UI/icon_music.png" alt={muted ? 'Unmute' : 'Mute'} width={40} height={40} style={{ imageRendering: 'pixelated', display: 'block' }} />
           </button>
+          <button
+            style={{ ...ICON_BTN, fontSize: 24, fontWeight: 800, color: '#fff', textShadow: '0 2px 3px rgba(0,0,0,0.7)', background: 'rgba(31,22,11,0.7)', borderRadius: 8 }}
+            onClick={() => { playSfx('ui_click', { volume: 0.4 }); setShowHelp(true); }}
+            title="How to Play"
+          >?</button>
         </div>
         <div style={TOP_RIGHT}>
           <Minimap data={minimapData} pings={pings} onNavigate={handleNavigate} />
@@ -306,6 +324,8 @@ export default function App() {
         onResearch={handleResearch}
         onClose={() => setTechTreeVisible(false)}
       />
+
+      <HowToPlay visible={showHelp} onClose={() => setShowHelp(false)} />
 
       {roomPhase === 'finished' && (
         <EndScreen won={winnerId === mySessionId} onBackToMenu={backToMenu} />
