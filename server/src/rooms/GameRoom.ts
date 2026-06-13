@@ -319,7 +319,7 @@ export class GameRoom extends Room<GameState> {
       player.gold -= cost;
       city.townHallLevel++;
       this.recomputeInfluence(city);
-      city.maxBuildings = 2 + (city.townHallLevel - 1);
+      city.maxBuildings = 2 + (city.townHallLevel - 1) * 2; // +2 build slots per upgrade
       city.maxHealth = 1000 + (city.townHallLevel - 1) * 500;
       city.health = city.maxHealth;
     });
@@ -1146,7 +1146,9 @@ export class GameRoom extends Room<GameState> {
       // field archer's punch. Dedicated defense towers keep their full bite.
       const capitalDmg = Math.max(1, Math.round(TROOP_STATS.archer.attack * 0.5 * techMul));
       const towerDmg = ARCHER_DEF_DMG * techMul;
-      this.archersShoot(city.x, city.y, defId, 2, capitalDmg);           // capital: 2 weak archers
+      // Archer count scales with castle level: L1 one, L2 two, L3+ three.
+      const archerShots = claimed ? Math.max(1, Math.min(3, city.townHallLevel)) : 1;
+      this.archersShoot(city.x, city.y, defId, archerShots, capitalDmg);  // weak last-ditch archers
       if (claimed) this.buildingsOf(city.id).forEach(b => {              // towers need an owner to exist
         if (b.type === 'defense_tower') this.archersShoot(b.x, b.y, defId, 1, towerDmg); // tower: 1
       });

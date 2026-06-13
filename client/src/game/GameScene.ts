@@ -33,6 +33,14 @@ export interface BuildData {
   health: number; maxHealth: number; autoProduceType: string;
 }
 export interface LairData { id: string; x: number; y: number; type: string; health: number; maxHealth: number; }
+// A drawn city: its container, live data, and the battlement archers (count
+// scales with castle level), tracked so they can be rebuilt on level/owner change.
+interface CityEntry {
+  gfx: Phaser.GameObjects.Container;
+  data: CityData;
+  archers: Phaser.GameObjects.Sprite[];
+  archerKey: string;
+}
 
 export type SelectionType = 'city' | 'intersection' | 'building' | 'resource' | 'none';
 export interface SelectionInfo {
@@ -65,7 +73,7 @@ export default class GameScene extends Phaser.Scene {
   private nodes: Map<string, NodeInfo> = new Map();
   private roadsById: Map<string, RoadData> = new Map();
 
-  private cityGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: CityData }> = new Map();
+  private cityGfx: Map<string, CityEntry> = new Map();
   private buildingGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: BuildData }> = new Map();
   private lairGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: LairData }> = new Map();
   private unitGfx: Map<string, UnitVisual> = new Map();
@@ -436,23 +444,47 @@ export default class GameScene extends Phaser.Scene {
       stroke: '#000', strokeThickness: 2,
     }).setOrigin(0.5);
 
-    // Two defending archers on the battlements (they do the fort's damage).
-    // Sized to match field units (0.62) and seated on the corner towers. Shown
-    // on every fort — greyed out on a neutral fort, coloured once claimed.
-    const acolor = city.ownerId ? factionOf(this.playerColors.get(city.ownerId)) : 'Blue';
-    const arL = this.add.sprite(-74, -56, `u_${acolor}_archer_idle`).setScale(0.62);
-    const arR = this.add.sprite(74, -56, `u_${acolor}_archer_idle`).setScale(0.62).setFlipX(true);
-    arL.play(`u_${acolor}_archer_idle`); arR.play(`u_${acolor}_archer_idle`);
-    if (!city.ownerId) { arL.setTint(0x8f9aa6); arR.setTint(0x8f9aa6); }
-    container.add([influence, castle, fire, fire2, nameLabel, levelLabel, arL, arR]);
+    container.add([influence, castle, fire, fire2, nameLabel, levelLabel]);
     container.setDepth(DEPTH_ENTITY + city.y * 0.01);
     container.setInteractive(new Phaser.Geom.Rectangle(-108, -118, 216, 200), Phaser.Geom.Rectangle.Contains);
-    const entry = { gfx: container, data: city };
+    const entry: CityEntry = { gfx: container, data: city, archers: [], archerKey: '' };
+    // Defending archers on the battlements — count scales with castle level
+    // (L1 one centre, L2 two, L3 three). Shown greyed on a neutral fort.
+    this.layoutArchers(entry);
     container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('city', city.id, city.name, entry.data); });
     this.cityGfx.set(city.id, entry);
   }
 
-  private refreshCityVisual(entry: { gfx: Phaser.GameObjects.Container; data: CityData }): void {
+  // Archer positions (container-relative x) for each castle level.
+  private archerOffsets(level: number): number[] {
+    const n = Math.max(1, Math.min(3, level || 1));
+    return n === 1 ? [0] : n === 2 ? [-74, 74] : [-74, 0, 74];
+  }
+
+  // (Re)build the battlement archers when the count or owner colour changes;
+  // otherwise just refresh their tint. Keyed so it's cheap on every sync.
+  private layoutArchers(entry: CityEntry): void {
+    const { gfx, data } = entry;
+    const acolor = data.ownerId ? factionOf(this.playerColors.get(data.ownerId)) : 'Blue';
+    const offsets = this.archerOffsets(data.townHallLevel);
+    const key = `${acolor}:${offsets.length}`;
+    if (key === entry.archerKey) {
+      entry.archers.forEach(a => a.setTint(data.ownerId ? 0xffffff : 0x8f9aa6));
+      return;
+    }
+    entry.archers.forEach(a => a.destroy());
+    entry.archers = offsets.map(dx => {
+      const ar = this.add.sprite(dx, -56, `u_${acolor}_archer_idle`).setScale(0.62);
+      if (dx > 0) ar.setFlipX(true);
+      ar.play(`u_${acolor}_archer_idle`);
+      if (!data.ownerId) ar.setTint(0x8f9aa6);
+      gfx.add(ar);
+      return ar;
+    });
+    entry.archerKey = key;
+  }
+
+  private refreshCityVisual(entry: CityEntry): void {
     const { gfx, data } = entry;
     const castle = gfx.getAt(1) as Phaser.GameObjects.Image;
     const key = `castle2_${data.ownerId ? factionOf(this.playerColors.get(data.ownerId)) : 'Blue'}`;
@@ -463,15 +495,8 @@ export default class GameScene extends Phaser.Scene {
     const burning = data.health < data.maxHealth * 0.7;
     (gfx.getAt(2) as Phaser.GameObjects.Sprite).setVisible(burning);
     (gfx.getAt(3) as Phaser.GameObjects.Sprite).setVisible(data.health < data.maxHealth * 0.4);
-    // Defending archers follow ownership/colour
-    const acolor = data.ownerId ? factionOf(this.playerColors.get(data.ownerId)) : 'Blue';
-    [6, 7].forEach(i => {
-      const ar = gfx.getAt(i) as Phaser.GameObjects.Sprite | undefined;
-      if (!ar) return;
-      ar.setTint(data.ownerId ? 0xffffff : 0x8f9aa6); // grey while neutral
-      const akey = `u_${acolor}_archer_idle`;
-      if (ar.anims.currentAnim?.key !== akey) ar.play(akey);
-    });
+    // Rebuild/refresh battlement archers (count scales with level, colour with owner)
+    this.layoutArchers(entry);
     this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 104, 92, data.health, data.maxHealth, true);
   }
 
@@ -901,10 +926,10 @@ export default class GameScene extends Phaser.Scene {
       const target = this.nearestEnemyNear(e.data.x, e.data.y, e.data.ownerId || '__neutral__', 300);
       if (!target) return;
       const color = e.data.ownerId ? factionOf(this.playerColors.get(e.data.ownerId)) : 'Blue';
-      this.playShoot(e.gfx.getAt(6) as Phaser.GameObjects.Sprite, color);
-      this.playShoot(e.gfx.getAt(7) as Phaser.GameObjects.Sprite, color);
-      this.fireArrow(e.data.x - 74, e.data.y - 56, target.x, target.y, color);
-      this.fireArrow(e.data.x + 74, e.data.y - 56, target.x, target.y, color);
+      e.archers.forEach(ar => {
+        this.playShoot(ar, color);
+        this.fireArrow(e.data.x + ar.x, e.data.y - 56, target.x, target.y, color);
+      });
     });
     // Defense towers: single archer on top.
     this.buildingGfx.forEach(e => {
@@ -1105,7 +1130,8 @@ export default class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (!p.rightButtonDown()) return;
       if (this.towerPlace) { this.cancelTowerPlacement(); return; } // right-click aborts placement
-      if (this.selection.type !== 'building' || this.selection.data?.type !== 'barracks') return;
+      // Any production building (barracks/archery/church) can set the rally road.
+      if (this.selection.type !== 'building' || !['barracks', 'archery', 'church'].includes(this.selection.data?.type)) return;
       const cityId = this.selection.data.cityId;
       const exits = [...this.roadsById.values()].filter(r => r.fromId === cityId);
       if (exits.length === 0) return;
