@@ -51,8 +51,8 @@ export const IMAGES: { key: string; url: string }[] = [
   { key: 'water', url: `${A}/Terrain/Water/Water.png` },
   { key: 'elevation', url: `${A}/Terrain/Ground/Tilemap_Elevation.png` },
   { key: 'icon_close', url: `${A}/UI/Icons/Regular_01.png` },
-  { key: 'goldmine', url: `${A}/Resources/Gold Mine/GoldMine_Active.png` },
   { key: 'goldmine_destroyed', url: `${A}/Resources/Gold Mine/GoldMine_Destroyed.png` },
+  { key: 'gold_pile', url: `${A}/Resources/Resources/G_Idle.png` },
   { key: 'goblin_house', url: `${A}/Factions/Goblins/Buildings/Wood_House/Goblin_House.png` },
   { key: 'castle_destroyed', url: `${A}/Factions/Knights/Buildings/Castle/Castle_Destroyed.png` },
   { key: 'res_wood', url: `${A}/Resources/Resources/W_Idle_(NoShadow).png` },
@@ -102,6 +102,8 @@ export function createAnims(scene: Phaser.Scene): void {
       rowAnim(scene, `${sheet}_idle`, sheet, 0, def.cols, def.idle, 8);
       rowAnim(scene, `${sheet}_walk`, sheet, 1, def.cols, def.walk, 10);
       rowAnim(scene, `${sheet}_attack`, sheet, 2, def.cols, def.attack, 12);
+      // Pawns have a second work row (horizontal chop) used by villagers
+      if (base === 'pawn') rowAnim(scene, `${sheet}_chop`, sheet, 3, def.cols, 6, 12);
     });
   });
   // Barrel goblin: 6-col 128px grid — row 2 idle (out), row 4 hop, row 5 lit fuse

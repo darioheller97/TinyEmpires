@@ -402,7 +402,12 @@ export default class GameScene extends Phaser.Scene {
       s.play({ key: 'sheep_anim', startFrame: (r.x + r.y) % 6 });
       container.add(s);
     } else {
-      container.add(this.add.image(0, 0, 'goldmine').setScale(0.6).setOrigin(0.5, 0.62));
+      // Gold deposit: a cluster of nugget piles on the ground
+      container.add([
+        this.add.image(0, 2, 'gold_pile').setScale(0.55),
+        this.add.image(-20, 12, 'gold_pile').setScale(0.38),
+        this.add.image(20, 14, 'gold_pile').setScale(0.32),
+      ]);
     }
     container.setDepth(DEPTH_ENTITY + r.y * 0.01);
     container.setInteractive(new Phaser.Geom.Rectangle(-28, -40, 56, 64), Phaser.Geom.Rectangle.Contains);
@@ -434,7 +439,7 @@ export default class GameScene extends Phaser.Scene {
       }
     };
     if (myId) {
-      state.cities.forEach((c: any) => { if (c.ownerId === myId) reveal(c.x, c.y, c.influenceRadius + 220); });
+      state.cities.forEach((c: any) => { if (c.ownerId === myId) reveal(c.x, c.y, (c.influenceRadius + 220) * 2); });
       state.units.forEach((u: any) => {
         if (u.ownerId !== myId) return;
         const pos = this.getUnitWorldPos(u);
@@ -500,8 +505,12 @@ export default class GameScene extends Phaser.Scene {
   private syncUnit(unit: any): void {
     const pos = this.getUnitWorldPos(unit);
     const existing = this.unitGfx.get(unit.id);
-    const desiredAnim = unit.status === 'fighting' || unit.status === 'sieging'
+    let desiredAnim = unit.status === 'fighting' || unit.status === 'sieging'
       ? 'attack' : unit.status === 'defending' ? 'idle' : 'walk';
+    // Villagers at work: hammer swing for mining, horizontal chop for the rest
+    if (unit.type === 'villager' && desiredAnim === 'attack' && unit.resourceType !== 'gold') {
+      desiredAnim = 'chop';
+    }
 
     if (existing) {
       if (pos) existing.container.setData('worldPos', pos);

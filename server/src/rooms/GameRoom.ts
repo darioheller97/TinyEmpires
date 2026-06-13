@@ -28,7 +28,7 @@ const SPIDER_BOUNTY = { wood: 0, food: 120, gold: 30 };
 const GOBLIN_BOUNTY = { wood: 0, food: 30, gold: 120 };
 
 const VILLAGER_COST_FOOD = 15;
-const VILLAGER_SPEED = 3.2;          // px per tick, walking off-road
+const VILLAGER_SPEED = 4.5;          // px per tick, walking off-road
 const VILLAGER_HARVEST_INTERVAL = 10; // ticks between harvest ticks
 const VILLAGER_SEARCH_RADIUS = 1400;  // from home city
 
@@ -581,8 +581,8 @@ export class GameRoom extends Room<GameState> {
   }
 
   private processCombat(): void {
-    // Re-evaluate engagements every tick
-    this.state.units.forEach(u => { if (u.status === 'fighting') u.status = 'marching'; });
+    // Re-evaluate engagements every tick (villagers manage their own status)
+    this.state.units.forEach(u => { if (u.status === 'fighting' && u.type !== 'villager') u.status = 'marching'; });
 
     const groups = new Map<string, UnitNode[]>();
     this.state.units.forEach(u => {

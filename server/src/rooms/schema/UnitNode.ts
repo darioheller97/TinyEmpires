@@ -52,12 +52,14 @@ export class UnitNode extends Schema {
   @type('number') x: number = 0;
   @type('number') y: number = 0;
 
+  // Villagers: what they gather (synced so the client picks work animations)
+  @type('string') resourceType: string = '';
+
   lastCombatTick: number = 0;
   // PvE units head for this city
   targetNodeId: string = '';
-  // Villagers: home city, resource type, current target node
+  // Villagers: home city, current target node
   homeCityId: string = '';
-  resourceType: string = '';
   targetResourceId: string = '';
 
   constructor(id: string, ownerId: string, type: string, roadId: string) {
