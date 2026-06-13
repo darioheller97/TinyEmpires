@@ -25,6 +25,34 @@ const PRODUCES: Record<string, string[]> = {
 };
 const PRODUCER_NAMES: Record<string, string> = { barracks: 'Barracks', archery: 'Archery', church: 'Church' };
 
+// Counter triangle (mirrors the server): knight ▶ archer ▶ lancer ▶ knight.
+// Shown per unit so the player can compose against what they scout.
+const COUNTER: Record<string, { strong: string; weak: string }> = {
+  knight: { strong: 'Archers', weak: 'Lancers' },
+  archer: { strong: 'Lancers', weak: 'Knights' },
+  lancer: { strong: 'Knights', weak: 'Archers' },
+};
+const ROLE_NOTE: Record<string, string> = { monk: 'Heals nearby allies' };
+
+function CounterLine({ type }: { type: string }) {
+  const c = COUNTER[type];
+  if (!c) {
+    return <div style={COUNTER_ROW}>{ROLE_NOTE[type] || ''}</div>;
+  }
+  return (
+    <div style={COUNTER_ROW}>
+      <span style={{ color: '#2e7d32', fontWeight: 700 }}>▲ {c.strong}</span>
+      <span style={{ opacity: 0.5 }}>·</span>
+      <span style={{ color: '#b5302a', fontWeight: 700 }}>▼ {c.weak}</span>
+    </div>
+  );
+}
+
+const COUNTER_ROW: React.CSSProperties = {
+  display: 'flex', gap: '6px', alignItems: 'center',
+  fontSize: '10px', margin: '0 2px 5px', opacity: 0.95,
+};
+
 const WRAP: React.CSSProperties = {
   ...PANEL,
   minWidth: '250px',
@@ -76,22 +104,28 @@ export default function SpawnPanel({ visible, producer, resources, autoProduceTy
         const enabled = resources.food >= opt.foodCost && resources.gold >= opt.goldCost
           && resources.popUsed < resources.popCap;
         const autoOn = autoProduceType === opt.type;
+        const c = COUNTER[opt.type];
+        const tip = c ? `${opt.name}: strong vs ${c.strong}, weak vs ${c.weak}`
+          : ROLE_NOTE[opt.type] ? `${opt.name}: ${ROLE_NOTE[opt.type]}` : opt.name;
         return (
-          <div style={ROW} key={opt.type}>
-            <button style={enabled ? SPAWN_BTN : SPAWN_BTN_OFF} disabled={!enabled} onClick={() => onSpawn(opt.type)}>
-              <span>{opt.name}</span>
-              <span style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
-                <span><img src={ICONS.food} style={SMALL_ICON} alt="f" />{opt.foodCost}</span>
-                {opt.goldCost > 0 && <span><img src={ICONS.gold} style={SMALL_ICON} alt="g" />{opt.goldCost}</span>}
-              </span>
-            </button>
-            <button
-              style={{ ...(autoOn ? BUTTON_RED : BUTTON), width: '46px', fontSize: '11px' }}
-              title={autoOn ? 'Auto-produce on — click to stop' : 'Auto-produce this unit'}
-              onClick={() => onSetAutoProduce(autoOn ? '' : opt.type)}
-            >
-              {autoOn ? '⟳on' : '⟳'}
-            </button>
+          <div key={opt.type} style={{ marginBottom: '4px' }}>
+            <div style={ROW}>
+              <button style={enabled ? SPAWN_BTN : SPAWN_BTN_OFF} disabled={!enabled} title={tip} onClick={() => onSpawn(opt.type)}>
+                <span>{opt.name}</span>
+                <span style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                  <span><img src={ICONS.food} style={SMALL_ICON} alt="f" />{opt.foodCost}</span>
+                  {opt.goldCost > 0 && <span><img src={ICONS.gold} style={SMALL_ICON} alt="g" />{opt.goldCost}</span>}
+                </span>
+              </button>
+              <button
+                style={{ ...(autoOn ? BUTTON_RED : BUTTON), width: '46px', fontSize: '11px' }}
+                title={autoOn ? 'Auto-produce on — click to stop' : 'Auto-produce this unit'}
+                onClick={() => onSetAutoProduce(autoOn ? '' : opt.type)}
+              >
+                {autoOn ? '⟳on' : '⟳'}
+              </button>
+            </div>
+            <CounterLine type={opt.type} />
           </div>
         );
       })}
