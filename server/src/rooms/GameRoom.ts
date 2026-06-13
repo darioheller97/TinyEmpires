@@ -124,6 +124,17 @@ export class GameRoom extends Room<GameState> {
     if (typeof opts.npcCount === 'number') this.state.npcCount = Math.max(0, Math.min(6, opts.npcCount | 0));
     if (typeof opts.npcAggro === 'number') this.state.npcAggro = Math.max(0.25, Math.min(3, opts.npcAggro));
     if (typeof opts.npcPower === 'number') this.state.npcPower = Math.max(0.25, Math.min(3, opts.npcPower));
+    if (typeof opts.aiLevel === 'string' && ['easy', 'normal', 'hard'].includes(opts.aiLevel)) this.state.aiLevel = opts.aiLevel;
+  }
+
+  // Rival-AI tuning by difficulty: income, whether it plays smart (counters +
+  // target selection + defends), cadence, starting stash, and keep-upgrade buffer.
+  private aiCfg(): { econ: number; smart: boolean; slow: boolean; stash: number; upgradeBuffer: number } {
+    switch (this.state.aiLevel) {
+      case 'easy': return { econ: 0.6, smart: false, slow: true, stash: 0.8, upgradeBuffer: 220 };
+      case 'hard': return { econ: 1.5, smart: true, slow: false, stash: 1.4, upgradeBuffer: 90 };
+      default: return { econ: 1.0, smart: true, slow: false, stash: 1.0, upgradeBuffer: 150 };
+    }
   }
 
   private firstFreeColorIndex(): number {
@@ -150,7 +161,8 @@ export class GameRoom extends Room<GameState> {
       const ci = this.firstFreeColorIndex();
       const bot = new Player(`bot_${i + 1}`, 'Enemy AI', PLAYER_COLORS[ci % PLAYER_COLORS.length]);
       bot.colorIndex = ci; bot.isBot = true;
-      bot.wood = 120; bot.food = 90; bot.gold = 30; // starting stash so it gets moving
+      const stash = this.aiCfg().stash;
+      bot.wood = 120 * stash; bot.food = 90 * stash; bot.gold = 30 * stash; // starting stash so it gets moving
       const city = cities.find(c => !c.ownerId);
       if (city) { city.ownerId = bot.id; city.health = city.maxHealth; bot.connectedCityId = city.id; }
       this.state.players.set(bot.id, bot);
@@ -559,8 +571,8 @@ export class GameRoom extends Room<GameState> {
       player.gold += g;
       player.populationCap = acc.pop;
       // Bots don't micro villagers, so a flat stipend keeps them building and
-      // producing at a steady, beatable pace.
-      if (player.isBot) { player.wood += 7; player.food += 6; player.gold += 4; }
+      // producing; difficulty scales the income (easy poorer, hard richer).
+      if (player.isBot) { const m = this.aiCfg().econ; player.wood += 7 * m; player.food += 6 * m; player.gold += 4 * m; }
     });
   }
 
@@ -584,28 +596,38 @@ export class GameRoom extends Room<GameState> {
   // A lightweight bot empire: build production, auto-train a balanced army,
   // rally toward the nearest enemy/neutral fort, and upgrade when flush.
   private processAI(): void {
+    const cfg = this.aiCfg();
+    const cycle = Math.floor(this.state.tick / AI_INTERVAL_TICKS);
+    // A smart bot adapts its barracks output to counter the enemy's main unit.
+    const counter = cfg.smart ? this.botCounterUnit() : '';
     this.state.players.forEach(bot => {
       if (!bot.isBot || bot.eliminated) return;
+      if (cfg.slow && cycle % 2 === 1) return; // easy bots think at half speed
       this.state.cities.forEach(city => {
         if (city.ownerId !== bot.id) return;
         const builds = this.buildingsOf(city.id);
         const has = (t: string) => builds.some(b => b.type === t);
-        // Build order: barracks → archery → house → tower.
+        // Build order: barracks → archery → house → church.
         if (builds.length < city.maxBuildings) {
           if (!has('barracks')) this.botBuild(bot, city, 'barracks');
           else if (!has('archery')) this.botBuild(bot, city, 'archery');
           else if (!has('house')) this.botBuild(bot, city, 'house');
           else if (!has('church')) this.botBuild(bot, city, 'church');
         }
-        // Keep producers training a mixed army.
+        // Keep producers training an army. A smart bot biases the barracks toward
+        // whatever beats the enemy's dominant melee unit; archers always flow.
         const bar = builds.find(b => b.type === 'barracks');
-        if (bar && !bar.autoProduceType) bar.autoProduceType = Math.random() < 0.5 ? 'knight' : 'lancer';
+        if (bar) {
+          if (counter === 'knight' || counter === 'lancer') bar.autoProduceType = counter;
+          else if (!bar.autoProduceType) bar.autoProduceType = Math.random() < 0.5 ? 'knight' : 'lancer';
+        }
         const arc = builds.find(b => b.type === 'archery');
         if (arc && !arc.autoProduceType) arc.autoProduceType = 'archer';
-        // Point fresh troops at the nearest fort it doesn't own.
-        this.botSetRally(bot, city);
-        // Upgrade the keep when it can comfortably afford it.
-        if (city.townHallLevel < 3 && bot.gold > city.townHallLevel * 50 + 140) {
+        // Hold troops home to defend a threatened fort, else push to a good target.
+        if (cfg.smart && this.botThreatened(city)) city.rallyRoadId = '';
+        else this.botSetRally(bot, city, cfg.smart);
+        // Upgrade the keep when it can comfortably afford it (sooner on hard).
+        if (city.townHallLevel < 3 && bot.gold > city.townHallLevel * 50 + cfg.upgradeBuffer) {
           bot.gold -= city.townHallLevel * 50;
           city.townHallLevel++;
           this.recomputeInfluence(city);
@@ -615,6 +637,32 @@ export class GameRoom extends Room<GameState> {
         }
       });
     });
+  }
+
+  // The unit type that best counters the enemy's most common combat unit, so a
+  // smart bot fields a composition that punishes whatever it's facing.
+  private botCounterUnit(): string {
+    const counts: Record<string, number> = { knight: 0, lancer: 0, archer: 0 };
+    this.state.units.forEach(u => {
+      const p = this.state.players.get(u.ownerId);
+      if (!p || p.isBot || u.type === 'villager') return; // count human/neutral foes
+      if (counts[u.type] !== undefined) counts[u.type]++;
+    });
+    let top = '', n = 0;
+    for (const t of ['knight', 'lancer', 'archer']) if (counts[t] > n) { n = counts[t]; top = t; }
+    const counter: Record<string, string> = { archer: 'knight', knight: 'lancer', lancer: 'archer' };
+    return n > 0 ? counter[top] : '';
+  }
+
+  // A fort is threatened if it's taking damage or an enemy is parked on it.
+  private botThreatened(city: CityNode): boolean {
+    if (city.health < city.maxHealth * 0.96) return true;
+    let siege = false;
+    this.state.units.forEach(u => {
+      if (siege || u.type === 'villager' || u.ownerId === city.ownerId) return;
+      if (u.atNodeId === city.id) siege = true;
+    });
+    return siege;
   }
 
   private botBuild(bot: Player, city: CityNode, type: BuildingType): void {
@@ -627,15 +675,29 @@ export class GameRoom extends Room<GameState> {
     this.recomputeInfluence(city);
   }
 
-  private botSetRally(bot: Player, city: CityNode): void {
+  private botSetRally(bot: Player, city: CityNode, smart = false): void {
     const exits = [...this.state.roads.values()].filter(r => r.fromId === city.id);
     if (exits.length === 0) return;
-    let target: CityNode | null = null, bestD = Infinity;
-    this.state.cities.forEach(c => {
-      if (c.ownerId === bot.id) return;
-      const d = Math.hypot(c.x - city.x, c.y - city.y);
-      if (d < bestD) { bestD = d; target = c; }
-    });
+    let target: CityNode | null = null;
+    if (smart) {
+      // Prefer the nearest neutral fort to expand cheaply; otherwise pick the
+      // weakest enemy fort (low HP, slight distance penalty) to finish it off.
+      let neutral: CityNode | null = null, nD = Infinity, enemy: CityNode | null = null, eScore = Infinity;
+      this.state.cities.forEach(c => {
+        if (c.ownerId === bot.id) return;
+        const d = Math.hypot(c.x - city.x, c.y - city.y);
+        if (!c.ownerId || c.ownerId === 'pve') { if (d < nD) { nD = d; neutral = c; } }
+        else { const score = c.health + d * 0.15; if (score < eScore) { eScore = score; enemy = c; } }
+      });
+      target = neutral || enemy;
+    } else {
+      let bestD = Infinity;
+      this.state.cities.forEach(c => {
+        if (c.ownerId === bot.id) return;
+        const d = Math.hypot(c.x - city.x, c.y - city.y);
+        if (d < bestD) { bestD = d; target = c; }
+      });
+    }
     if (!target) return;
     const t = target as CityNode;
     const tx = t.x - city.x, ty = t.y - city.y, tl = Math.hypot(tx, ty) || 1;

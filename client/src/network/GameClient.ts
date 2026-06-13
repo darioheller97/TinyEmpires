@@ -20,6 +20,7 @@ export interface MatchSettings {
   npcCount?: number;
   npcAggro?: number;
   npcPower?: number;
+  aiLevel?: string;   // easy | normal | hard (rival AI skill)
 }
 
 // Friendly room code: no ambiguous 0/O/1/I. Must match the server charset.

@@ -45,7 +45,7 @@ function Segmented<T extends string | number>(
   );
 }
 
-const DEFAULTS: MatchSettings = { mapSize: 'medium', npcCount: 2, npcAggro: 1, npcPower: 1 };
+const DEFAULTS: MatchSettings = { mapSize: 'medium', npcCount: 2, npcAggro: 1, npcPower: 1, aiLevel: 'normal' };
 
 function SettingsForm({ settings, set }: { settings: MatchSettings; set: (s: MatchSettings) => void }) {
   return (
@@ -69,6 +69,11 @@ function SettingsForm({ settings, set }: { settings: MatchSettings; set: (s: Mat
         <span style={LABEL}>NPC power</span>
         <Segmented value={settings.npcPower!} onChange={v => set({ ...settings, npcPower: v })}
           options={[{ label: 'Weak', val: 0.6 }, { label: 'Normal', val: 1 }, { label: 'Brutal', val: 1.6 }]} />
+      </div>
+      <div style={ROW}>
+        <span style={LABEL}>Rival AI</span>
+        <Segmented value={settings.aiLevel!} onChange={v => set({ ...settings, aiLevel: v })}
+          options={[{ label: 'Easy', val: 'easy' }, { label: 'Normal', val: 'normal' }, { label: 'Hard', val: 'hard' }]} />
       </div>
     </div>
   );
