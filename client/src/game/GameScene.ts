@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { GameClient } from '../network/GameClient';
 import { preloadAssets, createAnims, unitSkin, factionOf } from './assets';
-import { buildTerrain, TerrainInfo, TILE, WATER } from './terrain';
+import { buildTerrain, TerrainInfo, TILE, WATER, GRASS, ELEV } from './terrain';
 import { initAudio, startAmbient, playSfx } from './audio';
 
 interface NodeInfo { id: string; x: number; y: number; name: string; kind: 'city' | 'intersection' | 'lair'; }
@@ -74,6 +74,7 @@ export default class GameScene extends Phaser.Scene {
   private selectionRing: Phaser.GameObjects.Graphics | null = null;
   private glowTarget: Phaser.GameObjects.Container | null = null;
   private glowTween: Phaser.Tweens.Tween | null = null;
+  private towerPlace: { cityId: string; cx: number; cy: number; radius: number; ghost: Phaser.GameObjects.Container; tower: Phaser.GameObjects.Image; ring: Phaser.GameObjects.Graphics } | null = null;
   private routeArrowGfx: Phaser.GameObjects.Graphics | null = null;
 
   private selection: SelectionInfo = { type: 'none', id: '', name: '' };
@@ -837,6 +838,7 @@ export default class GameScene extends Phaser.Scene {
 
   private setupCameraControls(): void {
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if (this.towerPlace) this.updateTowerGhost(p);
       if (p.isDown && p.leftButtonDown()) {
         const dx = p.x - p.prevPosition.x;
         const dy = p.y - p.prevPosition.y;
@@ -849,11 +851,13 @@ export default class GameScene extends Phaser.Scene {
       this.cameras.main.setZoom(Phaser.Math.Clamp(this.cameras.main.zoom - dy * 0.001, 0.3, 2));
     });
     this.input.on('pointerdown', () => { this.dragMoved = false; });
+    this.input.keyboard?.on('keydown-ESC', () => this.cancelTowerPlacement());
     // Right-click sets a barracks' rally road: with a barracks selected, click the
     // outgoing road you want fresh troops to march down.
     this.input.mouse?.disableContextMenu();
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (!p.rightButtonDown()) return;
+      if (this.towerPlace) { this.cancelTowerPlacement(); return; } // right-click aborts placement
       if (this.selection.type !== 'building' || this.selection.data?.type !== 'barracks') return;
       const cityId = this.selection.data.cityId;
       const exits = [...this.roadsById.values()].filter(r => r.fromId === cityId);
@@ -870,10 +874,55 @@ export default class GameScene extends Phaser.Scene {
     });
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
       if (this.dragMoved) return;
+      if (this.towerPlace) {
+        const w = this.cameras.main.getWorldPoint(p.x, p.y);
+        if (this.towerSpotValid(w.x, w.y)) {
+          this.client?.placeTower(this.towerPlace.cityId, w.x, w.y);
+          playSfx('build_place', { volume: 0.55 });
+          this.cancelTowerPlacement();
+        }
+        return; // swallow the click while placing
+      }
       const hits = this.input.hitTestPointer(p);
       const hitInteractive = hits.some(h => (h as any).input && (h as any).input.enabled);
       if (!hitInteractive) this.clearSelection();
     });
+  }
+
+  // ── Tower placement (free placement inside the city's influence) ──
+  beginTowerPlacement(cityId: string): void {
+    const city = this.cityGfx.get(cityId);
+    if (!city) return;
+    this.cancelTowerPlacement();
+    const d = city.data;
+    const color = factionOf(this.playerColors.get(d.ownerId));
+    const ring = this.add.graphics().setDepth(195);
+    ring.lineStyle(3, 0xffe87a, 0.85).strokeCircle(d.x, d.y, d.influenceRadius);
+    const tower = this.add.image(0, 0, `tower2_${color}`).setScale(0.5).setOrigin(0.5, 0.72).setAlpha(0.75);
+    const ghost = this.add.container(d.x, d.y, [tower]).setDepth(196);
+    this.towerPlace = { cityId, cx: d.x, cy: d.y, radius: d.influenceRadius, ghost, tower, ring };
+  }
+
+  private towerSpotValid(x: number, y: number): boolean {
+    if (!this.towerPlace || !this.terrainInfo) return false;
+    if (Math.hypot(x - this.towerPlace.cx, y - this.towerPlace.cy) > this.towerPlace.radius) return false;
+    const c = Math.floor(x / TILE), r = Math.floor(y / TILE);
+    const g = this.terrainInfo.grid[r]?.[c];
+    return g === GRASS || g === ELEV; // land, off water and roads
+  }
+
+  private updateTowerGhost(p: Phaser.Input.Pointer): void {
+    if (!this.towerPlace) return;
+    const w = this.cameras.main.getWorldPoint(p.x, p.y);
+    this.towerPlace.ghost.setPosition(w.x, w.y);
+    this.towerPlace.tower.setTint(this.towerSpotValid(w.x, w.y) ? 0xffffff : 0xff6666);
+  }
+
+  private cancelTowerPlacement(): void {
+    if (!this.towerPlace) return;
+    this.towerPlace.ghost.destroy();
+    this.towerPlace.ring.destroy();
+    this.towerPlace = null;
   }
 
   // ── Exposed for React ────────────────────────────────────

@@ -58,6 +58,10 @@ export class GameClient {
     this.room?.send('build_structure', { cityId, type });
   }
 
+  placeTower(cityId: string, x: number, y: number): void {
+    this.room?.send('place_tower', { cityId, x, y });
+  }
+
   upgradeTownHall(cityId: string): void {
     this.room?.send('upgrade_town_hall', { cityId });
   }

@@ -155,6 +155,49 @@ export class GameRoom extends Room<GameState> {
     return this.elevations.some(e => Math.hypot(e.x - x, e.y - y) < e.r + margin);
   }
 
+  /** True when (x,y) sits on a road spline (within margin). */
+  private nearRoad(x: number, y: number, margin: number): boolean {
+    for (const road of this.state.roads.values()) {
+      const pts = road.splinePoints;
+      for (let i = 0; i < pts.length; i += 2) {
+        const p = pts[i];
+        if (p && Math.hypot(p.x - x, p.y - y) < margin) return true;
+      }
+    }
+    return false;
+  }
+
+  /** A spot is blocked for building if it overlaps a plateau, a road, another
+   *  building, a resource node, or sits too close to the city core. */
+  private spotBlocked(x: number, y: number, city: CityNode): boolean {
+    if (this.onElevation(x, y, 26)) return true;
+    if (this.nearRoad(x, y, 46)) return true;
+    if (Math.hypot(city.x - x, city.y - y) < 96) return true;
+    for (const b of this.state.buildings.values()) {
+      if (Math.hypot(b.x - x, b.y - y) < 76) return true;
+    }
+    for (const r of this.state.resources.values()) {
+      if (Math.hypot(r.x - x, r.y - y) < 60) return true;
+    }
+    return false;
+  }
+
+  /** Search the ring around a city for a clear building plot. */
+  private findBuildSpot(city: CityNode, count: number): { x: number; y: number } {
+    let fx = city.x, fy = city.y;
+    for (let ring = 0; ring < 5; ring++) {
+      const radius = 132 + ring * 52 + 26 * Math.floor(count / 8);
+      for (let k = 0; k < 12; k++) {
+        const angle = (count + k) * (Math.PI * 2 / 12) + Math.PI / 7;
+        const bx = city.x + Math.cos(angle) * radius;
+        const by = city.y + Math.sin(angle) * radius;
+        if (!this.spotBlocked(bx, by, city)) return { x: bx, y: by };
+        fx = bx; fy = by; // remember a fallback even if blocked
+      }
+    }
+    return { x: fx, y: fy };
+  }
+
   private getNodePos(id: string): { x: number; y: number } | null {
     const c = this.state.cities.get(id); if (c) return { x: c.x, y: c.y };
     const n = this.state.intersections.get(id); if (n) return { x: n.x, y: n.y };
@@ -176,19 +219,31 @@ export class GameRoom extends Room<GameState> {
       const cost = BUILDING_COSTS[bt];
       if (player.wood < cost.wood || player.food < cost.food || player.gold < cost.gold) return;
       player.wood -= cost.wood; player.food -= cost.food; player.gold -= cost.gold;
-      // Ring sits clear of the castle sprite (~90px tall above the node); skip
-      // any slot that would land on a plateau/cliff.
+      // Auto-place on a clear grass plot around the city (off roads, buffered
+      // from other buildings/resources, never on a plateau).
       const count = this.buildingsOf(city.id).length;
-      const radius = 130 + 30 * Math.floor(count / 8);
-      let bx = 0, by = 0;
-      for (let k = 0; k < 8; k++) {
-        const angle = (count + k) * (Math.PI * 2 / 8) + Math.PI / 8;
-        bx = city.x + Math.cos(angle) * radius;
-        by = city.y + Math.sin(angle) * radius;
-        if (!this.onElevation(bx, by, 24)) break;
-      }
+      const { x: bx, y: by } = this.findBuildSpot(city, count);
       const bId = nextId('bld');
       this.state.buildings.set(bId, new BuildingNode(bId, city.id, bt, bx, by));
+    });
+
+    // Towers are placed by the player anywhere inside the city's influence.
+    this.onMessage('place_tower', (client, msg: { cityId: string; x: number; y: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      const city = this.state.cities.get(msg?.cityId);
+      if (!city || city.ownerId !== client.sessionId) return;
+      if (this.buildingsOf(city.id).length >= city.maxBuildings) return;
+      const x = msg.x, y = msg.y;
+      if (typeof x !== 'number' || typeof y !== 'number') return;
+      // Must be inside the influence ring and on a clear grass plot.
+      if (Math.hypot(city.x - x, city.y - y) > city.influenceRadius) return;
+      if (this.spotBlocked(x, y, city)) return;
+      const cost = BUILDING_COSTS['defense_tower' as BuildingType];
+      if (player.wood < cost.wood || player.food < cost.food || player.gold < cost.gold) return;
+      player.wood -= cost.wood; player.food -= cost.food; player.gold -= cost.gold;
+      const bId = nextId('bld');
+      this.state.buildings.set(bId, new BuildingNode(bId, city.id, 'defense_tower', x, y));
     });
 
     this.onMessage('upgrade_town_hall', (client, msg: { cityId: string }) => {

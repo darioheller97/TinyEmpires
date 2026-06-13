@@ -80,7 +80,10 @@ export default function App() {
   const client = () => sceneRef.current?.getClient() ?? null;
 
   const handleBuild = useCallback((type: string) => {
-    if (selection.type === 'city') { client()?.buildStructure(selection.id, type); playSfx('build_place', { volume: 0.55 }); }
+    if (selection.type !== 'city') return;
+    // Towers are placed freely inside the influence ring; others auto-place.
+    if (type === 'defense_tower') { sceneRef.current?.beginTowerPlacement(selection.id); playSfx('ui_click', { volume: 0.4 }); return; }
+    client()?.buildStructure(selection.id, type); playSfx('build_place', { volume: 0.55 });
   }, [selection]);
   const handleUpgradeTownHall = useCallback(() => {
     if (selection.type === 'city') { client()?.upgradeTownHall(selection.id); playSfx('build_place', { volume: 0.55 }); }
