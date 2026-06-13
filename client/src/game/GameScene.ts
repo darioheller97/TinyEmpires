@@ -4,7 +4,23 @@ import { preloadAssets, createAnims, unitSkin, factionOf } from './assets';
 import { buildTerrain, TerrainInfo, TILE, WATER } from './terrain';
 
 interface NodeInfo { id: string; x: number; y: number; name: string; kind: 'city' | 'intersection' | 'lair'; }
-interface RoadData { id: string; fromId: string; toId: string; splinePoints: { x: number; y: number }[]; }
+interface RoadData { id: string; fromId: string; toId: string; splinePoints: { x: number; y: number }[]; tilePath: { c: number; r: number }[]; }
+
+// Must stay identical to the server's computeTilePath (GameRoom.ts): rasterizes a
+// spline into a 4-connected sequence of 64px tiles, bridging diagonal corners so
+// units hop through the corner tile instead of cutting across it.
+function computeTilePath(spline: { x: number; y: number }[]): { c: number; r: number }[] {
+  const T = 64;
+  const cells: { c: number; r: number }[] = [];
+  spline.forEach(p => {
+    const c = Math.floor(p.x / T), r = Math.floor(p.y / T);
+    const last = cells[cells.length - 1];
+    if (last && last.c === c && last.r === r) return;
+    if (last && last.c !== c && last.r !== r) cells.push({ c, r: last.r });
+    cells.push({ c, r });
+  });
+  return cells;
+}
 
 export interface CityData {
   id: string; x: number; y: number; name: string; ownerId: string;
@@ -131,7 +147,7 @@ export default class GameScene extends Phaser.Scene {
     const physicalSplines: { x: number; y: number }[][] = [];
     state.roads.forEach((r: any, id: string) => {
       const pts = r.splinePoints.map((p: any) => ({ x: p.x, y: p.y }));
-      this.roadsById.set(id, { id, fromId: r.fromId, toId: r.toId, splinePoints: pts });
+      this.roadsById.set(id, { id, fromId: r.fromId, toId: r.toId, splinePoints: pts, tilePath: computeTilePath(pts) });
       const pairKey = [r.fromId, r.toId].sort().join('|');
       if (!drawnPairs.has(pairKey)) {
         drawnPairs.add(pairKey);
@@ -332,22 +348,12 @@ export default class GameScene extends Phaser.Scene {
     const city = this.cityGfx.get(b.cityId);
     const color = factionOf(city ? this.playerColors.get(city.data.ownerId) : undefined);
 
-    if (b.type === 'barracks') {
-      container.add(this.add.image(0, 0, `house_${color}`).setScale(0.55).setOrigin(0.5, 0.68));
-    } else if (b.type === 'defense_tower') {
+    if (b.type === 'house') {
+      container.add(this.add.image(0, 0, `house_${color}`).setScale(0.6).setOrigin(0.5, 0.68));
+    } else if (b.type === 'barracks') {
+      container.add(this.add.image(0, 0, `wood_tower_${color}`).setScale(0.55).setOrigin(0.5, 0.7));
+    } else { // defense_tower
       container.add(this.add.image(0, 0, `tower_${color}`).setScale(0.5).setOrigin(0.5, 0.72));
-    } else if (b.type === 'gold_mine') {
-      container.add(this.add.image(0, 0, 'goldmine').setScale(0.55).setOrigin(0.5, 0.6));
-    } else if (b.type === 'farm') {
-      const s1 = this.add.sprite(-12, 0, 'sheep').setScale(0.45);
-      s1.play({ key: 'sheep_anim', startFrame: 0 });
-      const s2 = this.add.sprite(14, 8, 'sheep').setScale(0.38);
-      s2.play({ key: 'sheep_anim', startFrame: 3 });
-      container.add([this.add.image(0, 6, 'deco_8').setScale(0.9), s1, s2]);
-    } else { // lumber_mill
-      const tree = this.add.sprite(0, -8, 'tree').setScale(0.5).setOrigin(0.5, 0.7);
-      tree.play('tree_anim');
-      container.add([tree, this.add.image(16, 10, 'res_wood').setScale(0.28)]);
     }
 
     container.setDepth(DEPTH_ENTITY + b.y * 0.01);
@@ -581,21 +587,30 @@ export default class GameScene extends Phaser.Scene {
       return { x: node.x + Math.cos(angle) * radius, y: node.y + Math.sin(angle) * radius };
     }
     const road = this.roadsById.get(unit.roadId);
-    if (!road || road.splinePoints.length < 2) return null;
+    if (!road || road.tilePath.length < 2) return null;
+    const path = road.tilePath;
+    // Mirror the server's slot count exactly (pairSlots = max(3, tilePath.length)).
+    const slots = Math.max(3, path.length);
+    // The server steps units in integer tile slots (slot = round(t * slots));
+    // recover the same tile so the sprite lands exactly where the server placed it.
+    const slot = Phaser.Math.Clamp(Math.round(unit.t * slots), 0, path.length - 1);
+    const cell = path[slot];
+    return { x: (cell.c + 0.5) * TILE, y: (cell.r + 0.5) * TILE };
+  }
+
+  // Briefly highlight the chosen rally road so the player sees where troops will go.
+  private flashRally(road: RoadData): void {
     const pts = road.splinePoints;
-    const t = Phaser.Math.Clamp(unit.t, 0, 0.999);
-    const idx = t * (pts.length - 1);
-    const i = Math.floor(idx);
-    const frac = idx - i;
-    const p0 = pts[Math.min(i, pts.length - 1)];
-    const p1 = pts[Math.min(i + 1, pts.length - 1)];
-    const x = p0.x + (p1.x - p0.x) * frac;
-    const y = p0.y + (p1.y - p0.y) * frac;
-    // Snap to the center of the road tile so hops land tile-to-tile
-    return {
-      x: (Math.floor(x / TILE) + 0.5) * TILE,
-      y: (Math.floor(y / TILE) + 0.5) * TILE,
-    };
+    if (pts.length < 2) return;
+    const g = this.add.graphics().setDepth(190);
+    g.lineStyle(6, 0xffe87a, 0.95);
+    g.beginPath();
+    g.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+    g.strokePath();
+    const end = pts[pts.length - 1];
+    const flag = this.add.text(end.x, end.y - 20, '🚩', { fontSize: '22px' }).setOrigin(0.5).setDepth(191);
+    this.tweens.add({ targets: [g, flag], alpha: 0, duration: 1400, ease: 'Power2', onComplete: () => { g.destroy(); flag.destroy(); } });
   }
 
   private showFloatingDamage(x: number, y: number, amount: number, color: string = '#ff4444'): void {
@@ -681,6 +696,25 @@ export default class GameScene extends Phaser.Scene {
       this.cameras.main.setZoom(Phaser.Math.Clamp(this.cameras.main.zoom - dy * 0.001, 0.3, 2));
     });
     this.input.on('pointerdown', () => { this.dragMoved = false; });
+    // Right-click sets a barracks' rally road: with a barracks selected, click the
+    // outgoing road you want fresh troops to march down.
+    this.input.mouse?.disableContextMenu();
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (!p.rightButtonDown()) return;
+      if (this.selection.type !== 'building' || this.selection.data?.type !== 'barracks') return;
+      const cityId = this.selection.data.cityId;
+      const exits = [...this.roadsById.values()].filter(r => r.fromId === cityId);
+      if (exits.length === 0) return;
+      const world = this.cameras.main.getWorldPoint(p.x, p.y);
+      let best: RoadData | null = null, bestD = Infinity;
+      for (const road of exits) {
+        for (const pt of road.splinePoints) {
+          const d = Phaser.Math.Distance.Squared(world.x, world.y, pt.x, pt.y);
+          if (d < bestD) { bestD = d; best = road; }
+        }
+      }
+      if (best) { this.client?.setRally(cityId, best.id); this.flashRally(best); }
+    });
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
       if (this.dragMoved) return;
       const hits = this.input.hitTestPointer(p);

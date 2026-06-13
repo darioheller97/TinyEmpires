@@ -29,9 +29,27 @@ const GOBLIN_BOUNTY = { wood: 0, food: 30, gold: 120 };
 const VILLAGER_COST_FOOD = 15;
 const VILLAGER_SPEED = 4.5;          // px per tick, walking off-road
 // Units advance on a rhythm (NecroDancer-style beat) instead of gliding
-const MOVE_BEAT_TICKS = 5;           // one step every 0.5s
+const MOVE_BEAT_TICKS = 8;           // one step every 0.8s
 const VILLAGER_HARVEST_INTERVAL = 10; // ticks between harvest ticks
 const VILLAGER_SEARCH_RADIUS = 1400;  // from home city
+
+/**
+ * Rasterize a road spline into a 4-connected sequence of 64px tiles.
+ * MUST stay identical to the client version (terrain.ts) — units hop
+ * exactly along these tiles.
+ */
+export function computeTilePath(spline: { x: number; y: number }[]): { c: number; r: number }[] {
+  const T = 64;
+  const cells: { c: number; r: number }[] = [];
+  spline.forEach(p => {
+    const c = Math.floor(p.x / T), r = Math.floor(p.y / T);
+    const last = cells[cells.length - 1];
+    if (last && last.c === c && last.r === r) return;
+    if (last && last.c !== c && last.r !== r) cells.push({ c, r: last.r }); // bridge corners
+    cells.push({ c, r });
+  });
+  return cells;
+}
 
 function buildSplinePoints(a: { x: number; y: number }, via: { x: number; y: number }[], b: { x: number; y: number }): { x: number; y: number }[] {
   const pts: { x: number; y: number }[] = [];
@@ -98,10 +116,9 @@ export class GameRoom extends Room<GameState> {
       this.state.roads.set(rId, new Road(rId, e.b, e.a, rev));
       this.reverseRoad.set(fId, rId);
       this.reverseRoad.set(rId, fId);
-      // One walkable tile slot per 64px (terrain tile) of road
-      let len = 0;
-      for (let p = 1; p < fwd.length; p++) len += Math.hypot(fwd[p].x - fwd[p - 1].x, fwd[p].y - fwd[p - 1].y);
-      this.pairSlots.set(fId < rId ? fId : rId, Math.max(3, Math.round(len / 64)));
+      // Slots = the road's rasterized tile path (fId < rId always, so the
+      // canonical pair direction is the forward spline — mirrored client-side)
+      this.pairSlots.set(fId, Math.max(3, computeTilePath(fwd).length));
       const lair = this.state.lairs.get(e.a);
       if (lair) lair.roadId = fId;
     });
@@ -210,6 +227,15 @@ export class GameRoom extends Room<GameState> {
       }
     });
 
+    this.onMessage('set_rally', (client, msg: { cityId: string; roadId: string }) => {
+      const city = this.state.cities.get(msg.cityId);
+      if (!city || city.ownerId !== client.sessionId) return;
+      if (msg.roadId === '') { city.rallyRoadId = ''; return; }
+      const road = this.state.roads.get(msg.roadId);
+      if (!road || road.fromId !== city.id) return; // must be an outgoing road
+      city.rallyRoadId = msg.roadId;
+    });
+
     this.onMessage('research_tech', (client, msg: { techId: string }) => {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
@@ -229,7 +255,8 @@ export class GameRoom extends Room<GameState> {
     if (player.populationUsed + 1 > player.populationCap) return false;
     const barracks = this.buildingsOf(city.id).find(b => b.type === 'barracks');
     if (!barracks) return false;
-    const targetRoad = [...this.state.roads.values()].find(r => r.fromId === city.id);
+    const exits = [...this.state.roads.values()].filter(r => r.fromId === city.id);
+    const targetRoad = exits.find(r => r.id === city.rallyRoadId) || exits[0];
     if (!targetRoad) return false;
     if (!this.isSlotFree(targetRoad.id, 0)) return false; // exit tile occupied
     player.food -= stats.foodCost; player.gold -= stats.goldCost;

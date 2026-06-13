@@ -24,6 +24,8 @@ export default function PhaserGame({ onResourceUpdate, onMapBounds, onSelectionC
         height: window.innerHeight,
         parent: containerRef.current,
         backgroundColor: '#2d5a27',
+        // Don't process pointer releases that happen over the DOM HUD
+        input: { windowEvents: false },
         scene: [GameScene],
         scale: {
           mode: Phaser.Scale.RESIZE,

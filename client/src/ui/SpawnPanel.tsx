@@ -83,6 +83,9 @@ export default function SpawnPanel({ visible, resources, autoProduceType, onSpaw
           </div>
         );
       })}
+      <div style={{ fontSize: '10px', opacity: 0.8, marginTop: '4px' }}>
+        🚩 Right-click a road to set the rally point
+      </div>
     </div>
   );
 }

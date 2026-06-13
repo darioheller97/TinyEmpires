@@ -50,6 +50,10 @@ export class GameClient {
     this.room?.send('set_route', { intersectionId, targetRoadId });
   }
 
+  setRally(cityId: string, roadId: string): void {
+    this.room?.send('set_rally', { cityId, roadId });
+  }
+
   buildStructure(cityId: string, type: string): void {
     this.room?.send('build_structure', { cityId, type });
   }

@@ -64,6 +64,7 @@ FACTION_COLORS.forEach(c => {
     { key: `castle_${c}`, url: `${A}/Factions/Knights/Buildings/Castle/Castle_${c}.png` },
     { key: `house_${c}`, url: `${A}/Factions/Knights/Buildings/House/House_${c}.png` },
     { key: `tower_${c}`, url: `${A}/Factions/Knights/Buildings/Tower/Tower_${c}.png` },
+    { key: `wood_tower_${c}`, url: `${A}/Factions/Goblins/Buildings/Wood_Tower/Wood_Tower_${c}.png` },
   );
 });
 for (let i = 1; i <= 18; i++) {

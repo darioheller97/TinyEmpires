@@ -32,6 +32,10 @@ export class CityNode extends Schema {
   @type('number')
   maxBuildings: number = 2;
 
+  // Preferred outgoing road for newly spawned troops ('' = first available)
+  @type('string')
+  rallyRoadId: string = '';
+
   constructor(id: string, x: number, y: number, name: string) {
     super();
     this.id = id;
