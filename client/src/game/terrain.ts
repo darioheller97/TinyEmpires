@@ -200,9 +200,13 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   }
 
   // ── Cliffs (south-facing only, like the Tiny Swords look) ──
-  //  • coast: land that drops to water on its south edge → 2-tile rocky wall
-  //    with a foam base (frames 41–44 over 50–53).
-  //  • plateau: an elevated cell dropping to lower grass → 1-tile rocky face.
+  // A single rocky tile per drop — CLIFF_UP (41–44) already carries the grass
+  // lip on top, so one tile reads as a full cliff (stacking two looked like
+  // double pillars). Higher ground is terraced via separate plateau discs,
+  // each its own one-tile step with grass above and below.
+  //  • coast: land dropping to water on its south edge → 1-tile cliff + a foam
+  //    ripple lapping its foot.
+  //  • plateau: an elevated cell dropping to lower grass → 1-tile cliff face.
   const cliffTop = new Set<number>(); // land cells fronted by a cliff (skip foam)
   const cliffPart = (r: number, c: number, edge: (r: number, c: number) => boolean): number => {
     if (!edge(r, c - 1)) return 0;   // left end
@@ -217,7 +221,9 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
       if (southCoast(r, c)) {
         const i = cliffPart(r, c, southCoast);
         scene.add.image(x, (r + 1) * TILE, 'grass1', CLIFF_UP[i]).setOrigin(0).setDepth(7 + r * 0.02);
-        scene.add.image(x, (r + 2) * TILE, 'grass1', CLIFF_LO[i]).setOrigin(0).setDepth(7 + r * 0.02 + 0.01);
+        // water ripple breaking against the foot of the cliff
+        scene.add.sprite(x + TILE / 2, (r + 2) * TILE, 'foam2').setDepth(1)
+          .play({ key: 'foam2_anim', startFrame: Math.floor(rng() * 16) });
         cliffTop.add(r * cols + c);
       } else if (platDrop(r, c)) {
         const i = cliffPart(r, c, platDrop);
