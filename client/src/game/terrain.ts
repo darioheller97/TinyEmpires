@@ -212,19 +212,15 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   const southCoast = (r: number, c: number) => isLand(r, c) && grid[r][c] !== SAND && !isLand(r + 1, c);
   const platDrop = (r: number, c: number) => isElev(r, c) && isLand(r + 1, c) && !isElev(r + 1, c) && !isSand(r + 1, c);
   const cliffHere = (r: number, c: number) => southCoast(r, c) || platDrop(r, c);
-  // Is the side cell (sr,sc) a tier *below* the cliff cap at (r,c)? For a
-  // plateau the cap is ELEV (lower = non-elev); for a coast it's sea-level land
-  // (lower = water). Used to decide whether a run-end should round off.
-  const tierLower = (r: number, c: number, sr: number, sc: number) =>
-    isElev(r, c) ? !isElev(sr, sc) : !isLand(sr, sc);
   // Frames for a cliff cell: [grass cap (base pass), rocky face (face pass)].
-  // A run-end whose side drops to lower ground rounds off with the pack's
-  // diagonal corner pieces (grass cascades down: 36/45 left, 39/48 right) so
-  // stepped coastlines read as continuous cliffs instead of cut-off blocks.
+  // The diagonal corner pieces (36/45 left, 39/48 right) are mostly transparent
+  // — they cascade grass down toward open sea. Only round off a run-end whose
+  // side drops to WATER; over an inland plateau the transparent corner would
+  // expose the map's water background as a blue square, so keep the opaque cap.
   const cliffFrames = (r: number, c: number): [number, number] => {
     const le = !cliffHere(r, c - 1), re = !cliffHere(r, c + 1);
-    if (le && !re && tierLower(r, c, r, c - 1)) return [36, 45];
-    if (re && !le && tierLower(r, c, r, c + 1)) return [39, 48];
+    if (le && !re && !isLand(r, c - 1)) return [36, 45];
+    if (re && !le && !isLand(r, c + 1)) return [39, 48];
     const cap = le ? CAP[0] : (re ? CAP[3] : CAP[1]);
     const rock = le ? CLIFF_UP[0] : (re ? CLIFF_UP[3] : (c & 1 ? CLIFF_UP[1] : CLIFF_UP[2]));
     return [cap, rock];

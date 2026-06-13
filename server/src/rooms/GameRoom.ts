@@ -1017,12 +1017,16 @@ export class GameRoom extends Room<GameState> {
   private processDefenseArchers(): void {
     if (this.state.tick % RETALIATE_INTERVAL_TICKS !== 0) return;
     this.state.cities.forEach(city => {
-      if (!city.ownerId || !this.state.players.has(city.ownerId)) return;
-      const owner = this.state.players.get(city.ownerId);
+      const claimed = !!city.ownerId && this.state.players.has(city.ownerId);
+      // Neutral forts are garrisoned too: they loose arrows at any military unit
+      // that strays into range. A sentinel "owner" no real unit shares means
+      // archersShoot treats everyone (PvE and players alike) as a target.
+      const defId = claimed ? city.ownerId : '__neutral__';
+      const owner = claimed ? this.state.players.get(city.ownerId) : undefined;
       const dmg = ARCHER_DEF_DMG * (owner?.hasTech('dmg_archer') ? 1.25 : 1);
-      this.archersShoot(city.x, city.y, city.ownerId, 2, dmg);            // capital: 2 archers
-      this.buildingsOf(city.id).forEach(b => {
-        if (b.type === 'defense_tower') this.archersShoot(b.x, b.y, city.ownerId, 1, dmg); // tower: 1
+      this.archersShoot(city.x, city.y, defId, 2, dmg);                  // capital: 2 archers
+      if (claimed) this.buildingsOf(city.id).forEach(b => {              // towers need an owner to exist
+        if (b.type === 'defense_tower') this.archersShoot(b.x, b.y, defId, 1, dmg); // tower: 1
       });
     });
   }

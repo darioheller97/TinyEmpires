@@ -878,10 +878,11 @@ export default class GameScene extends Phaser.Scene {
   private tickArcherFx(): void {
     // Capital forts: two battlement archers each volley the nearest foe.
     this.cityGfx.forEach(e => {
-      if (!e.data.ownerId || !e.gfx.visible) return;
-      const target = this.nearestEnemyNear(e.data.x, e.data.y, e.data.ownerId, 300);
+      if (!e.gfx.visible) return;
+      // Neutral forts defend too — a sentinel id makes every unit a valid target.
+      const target = this.nearestEnemyNear(e.data.x, e.data.y, e.data.ownerId || '__neutral__', 300);
       if (!target) return;
-      const color = factionOf(this.playerColors.get(e.data.ownerId));
+      const color = e.data.ownerId ? factionOf(this.playerColors.get(e.data.ownerId)) : 'Blue';
       this.playShoot(e.gfx.getAt(6) as Phaser.GameObjects.Sprite, color);
       this.playShoot(e.gfx.getAt(7) as Phaser.GameObjects.Sprite, color);
       this.fireArrow(e.data.x - 74, e.data.y - 56, target.x, target.y, color);
