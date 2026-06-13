@@ -8,9 +8,11 @@ import React from 'react';
 const U = '/assets2/UI';
 
 export const PANEL: React.CSSProperties = {
+  // Parchment scroll, repacked from the pack's spaced 3x3 paper sheet into a
+  // tight 9-slice atlas (corners 44px, fill stretches the centre).
   borderStyle: 'solid',
-  borderWidth: '26px',
-  borderImage: `url(${U}/panel.png) 36 fill stretch`,
+  borderWidth: '20px',
+  borderImage: `url(${U}/paper.png) 44 fill stretch`,
   imageRendering: 'pixelated',
   color: '#4a3417',
   fontFamily: '"Trebuchet MS", Verdana, sans-serif',

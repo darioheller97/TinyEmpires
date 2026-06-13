@@ -45,11 +45,11 @@ const ICON_BTN: React.CSSProperties = {
 };
 
 const BUILD_OPTIONS: BuildOption[] = [
-  { type: 'house', name: 'House (+5 pop)', cost: { wood: 25, food: 10, gold: 0 } },
-  { type: 'barracks', name: 'Barracks', cost: { wood: 50, food: 20, gold: 10 } },
-  { type: 'archery', name: 'Archery', cost: { wood: 50, food: 15, gold: 15 } },
-  { type: 'church', name: 'Church', cost: { wood: 45, food: 25, gold: 20 } },
-  { type: 'defense_tower', name: 'Defense Tower', cost: { wood: 60, food: 15, gold: 20 } },
+  { type: 'house', name: 'House (+5 pop)', cost: { wood: 40, food: 10, gold: 0 } },
+  { type: 'barracks', name: 'Barracks', cost: { wood: 90, food: 20, gold: 10 } },
+  { type: 'archery', name: 'Archery', cost: { wood: 90, food: 15, gold: 15 } },
+  { type: 'church', name: 'Church', cost: { wood: 80, food: 25, gold: 20 } },
+  { type: 'defense_tower', name: 'Defense Tower', cost: { wood: 160, food: 15, gold: 20 } },
 ];
 
 const PRODUCER_TYPES = ['barracks', 'archery', 'church'];

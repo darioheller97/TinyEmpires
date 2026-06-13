@@ -6,11 +6,11 @@ export const BUILDING_TYPES = ['house', 'barracks', 'archery', 'church', 'defens
 export type BuildingType = (typeof BUILDING_TYPES)[number];
 
 export const BUILDING_COSTS: Record<BuildingType, { wood: number; food: number; gold: number }> = {
-  house: { wood: 25, food: 10, gold: 0 },
-  barracks: { wood: 50, food: 20, gold: 10 },
-  archery: { wood: 50, food: 15, gold: 15 },
-  church: { wood: 45, food: 25, gold: 20 },
-  defense_tower: { wood: 60, food: 15, gold: 20 },
+  house: { wood: 40, food: 10, gold: 0 },
+  barracks: { wood: 90, food: 20, gold: 10 },
+  archery: { wood: 90, food: 15, gold: 15 },
+  church: { wood: 80, food: 25, gold: 20 },
+  defense_tower: { wood: 160, food: 15, gold: 20 },
 };
 
 export const BUILDING_NAMES: Record<BuildingType, string> = {
