@@ -277,22 +277,10 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
     }
   }
 
-  // ── Shadows cast by elevated ground onto the lower ground ──
-  // Tilemap guide layers 3/5/7: each elevation tier drops a soft shadow on the
-  // ground below it. Light comes from the upper-left, so shadow falls on lower
-  // grass that sits south or east of a raised cell. Depth keeps it above the
-  // flat grass (2) but below the cliff face (7) and the plateau top (6).
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (grid[r][c] !== GRASS && grid[r][c] !== SAND) continue;
-      const south = isElev(r - 1, c);            // raised ground to the north → shadow falls here
-      const east = isElev(r, c - 1);             // raised ground to the west
-      const corner = isElev(r - 1, c - 1);
-      if (!south && !east && !corner) continue;
-      const p = cellCenter(c, r);
-      scene.add.image(p.x, p.y - 6, 'shadow').setScale(0.42).setAlpha(0.45).setDepth(4.5);
-    }
-  }
+  // (Elevated ground only renders a visible drop on its south edge, where the
+  // cliff face already lays down its own foot shadow above. A broader pass that
+  // also shadowed the east/north sides was dropping mystery dark patches on
+  // open grass beside flat plateau edges, so it was removed.)
 
   // ── Animated foam on coast tiles that aren't fronted by a cliff ──
   for (let r = 0; r < rows; r++) {
