@@ -62,6 +62,8 @@ export interface MinimapData {
   lairs: { x: number; y: number; type: string; alive: boolean }[];
   // Full curved road geometry (spline points), so the minimap traces real paths.
   roads: { pts: { x: number; y: number }[] }[];
+  // Current camera viewport in world coords, drawn as a rectangle.
+  view?: { x: number; y: number; w: number; h: number };
 }
 
 const DEPTH_ENTITY = 10; // + y*0.01 for painter's order
@@ -204,10 +206,13 @@ export default class GameScene extends Phaser.Scene {
         c.setData('beatAt', time);
         const ddx = pos.x - c.x;
         if (Math.abs(ddx) > 0.8) u.sprite.setFlipX(ddx < 0);
+        const stepping = Math.hypot(ddx, pos.y - c.y) > 4;
         // Re-anchor the metronome to this real step so the pulse lands exactly
         // on the beat the troops move to (the constant clock above keeps it
         // going when nothing is marching). Phase-only — the play is up there.
-        if (Math.hypot(ddx, pos.y - c.y) > 4) this.beatClock = time;
+        if (stepping) this.beatClock = time;
+        // Kick up a little dust as columns march (some steps, on-screen only).
+        if (stepping && Math.random() < 0.18) this.marchPuff(c.x, c.y);
       }
       const from = c.getData('hopFrom') as { x: number; y: number };
       const to = c.getData('hopTo') as { x: number; y: number };
@@ -465,7 +470,7 @@ export default class GameScene extends Phaser.Scene {
     influence.setVisible(false);
     // Unclaimed cities show an intact but greyed-out (neutral) fort, not a ruin.
     const castle = this.add.image(0, 0, `castle2_${city.ownerId ? factionOf(this.playerColors.get(city.ownerId)) : 'Blue'}`);
-    castle.setScale(0.7).setOrigin(0.5, 0.62).setTint(city.ownerId ? 0xffffff : 0x8f9aa6);
+    castle.setScale(this.castleScale(city.townHallLevel)).setOrigin(0.5, 0.62).setTint(city.ownerId ? 0xffffff : 0x8f9aa6);
     const fire = this.add.sprite(-42, -56, 'fire').setScale(0.9).setVisible(false);
     fire.play('fire_anim');
     const fire2 = this.add.sprite(48, -28, 'fire').setScale(0.7).setVisible(false);
@@ -488,6 +493,11 @@ export default class GameScene extends Phaser.Scene {
     this.layoutArchers(entry);
     container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('city', city.id, city.name, entry.data); });
     this.cityGfx.set(city.id, entry);
+  }
+
+  // The keep grows with its town-hall level so progress reads at a glance.
+  private castleScale(level: number): number {
+    return 0.7 + (Math.max(1, Math.min(3, level || 1)) - 1) * 0.08;
   }
 
   // Archer positions (container-relative x) for each castle level.
@@ -525,6 +535,7 @@ export default class GameScene extends Phaser.Scene {
     const key = `castle2_${data.ownerId ? factionOf(this.playerColors.get(data.ownerId)) : 'Blue'}`;
     if (castle.texture.key !== key) castle.setTexture(key);
     castle.setTint(data.ownerId ? 0xffffff : 0x8f9aa6); // grey when unclaimed
+    castle.setScale(this.castleScale(data.townHallLevel)); // grows per level
     (gfx.getAt(5) as Phaser.GameObjects.Text).setText(`Lv.${data.townHallLevel}`);
     // Burning when badly damaged
     const burning = data.health < data.maxHealth * 0.7;
@@ -1155,6 +1166,19 @@ export default class GameScene extends Phaser.Scene {
       onComplete: () => { if (spr.active) spr.x = baseX; } });
   }
 
+  // A tiny dust puff under a marching unit's feet (sells "army on the move").
+  private marchPuff(x: number, y: number): void {
+    const v = this.cameras.main.worldView;
+    if (x < v.x || x > v.right || y < v.y || y > v.bottom) return; // on-screen only
+    const g = this.add.graphics().setDepth(DEPTH_ENTITY + y * 0.01 - 0.2);
+    const st = { r: 2, a: 0.45 };
+    this.tweens.add({
+      targets: st, r: 9, a: 0, duration: 320, ease: 'Quad.Out',
+      onUpdate: () => { g.clear(); g.fillStyle(0xe8dcc0, st.a).fillEllipse(x, y + 6, st.r * 2, st.r); },
+      onComplete: () => g.destroy(),
+    });
+  }
+
   // A soft dust ring at ground level (unit spawn / building raise).
   private dustRing(x: number, y: number): void {
     const g = this.add.graphics().setDepth(DEPTH_ENTITY + y * 0.01 - 0.1);
@@ -1762,11 +1786,13 @@ export default class GameScene extends Phaser.Scene {
         this.minimapRoads = roads;
       }
       const ti = this.terrainInfo;
+      const vv = this.cameras.main.worldView;
       const data: MinimapData = {
         width: this.mapW, height: this.mapH,
         cols: ti?.cols ?? 0, rows: ti?.rows ?? 0, tile: TILE,
         fog: this.fogState,
         cities: [], lairs: [], roads: this.minimapRoads,
+        view: { x: vv.x, y: vv.y, w: vv.width, h: vv.height },
       };
       this.cityGfx.forEach(entry => {
         data.cities.push({

@@ -122,6 +122,18 @@ export default function Minimap({ data, pings, onNavigate }: Props) {
         ctx.imageSmoothingEnabled = prevSmooth;
       }
     }
+
+    // Camera viewport rectangle, so you can see where you're looking.
+    if (data.view) {
+      const vx = data.view.x * scaleX, vy = data.view.y * scaleY;
+      const vw = data.view.w * scaleX, vh = data.view.h * scaleY;
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(
+        Math.max(0.5, vx), Math.max(0.5, vy),
+        Math.min(MINIMAP_W - 1, vw), Math.min(MINIMAP_H - 1, vh),
+      );
+    }
   }, [data]);
 
   // Animated alert pings: expanding rings on an overlay canvas, driven by rAF so
