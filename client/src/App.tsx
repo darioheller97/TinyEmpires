@@ -7,7 +7,7 @@ import BuildMenu, { BuildOption } from './ui/BuildMenu';
 import InfoPanel from './ui/InfoPanel';
 import SpawnPanel from './ui/SpawnPanel';
 import TechTreeModal, { TechOption } from './ui/TechTreeModal';
-import { BUTTON as SKIN_BUTTON, PANEL as SKIN_PANEL } from './ui/skin';
+import { PANEL as SKIN_PANEL } from './ui/skin';
 import { playSfx, toggleMute, isAudioMuted } from './game/audio';
 
 // Styles
@@ -31,11 +31,6 @@ const BOTTOM_LEFT: React.CSSProperties = {
 };
 const BOTTOM_RIGHT: React.CSSProperties = {
   position: 'absolute', bottom: 16, right: 16, pointerEvents: 'auto',
-};
-
-const TECH_BTN: React.CSSProperties = {
-  ...SKIN_BUTTON,
-  fontSize: '13px',
 };
 
 // A bare clickable icon — no button panel behind it, just the pack art.
@@ -143,8 +138,12 @@ export default function App() {
           <ResourceBar resources={resources} />
         </div>
         <div style={{ ...TOP_LEFT, display: 'flex', gap: '8px' }}>
-          <button style={TECH_BTN} onClick={() => { playSfx('ui_click', { volume: 0.4 }); setTechTreeVisible(true); }}>
-            📜 Tech Tree
+          <button
+            style={ICON_BTN}
+            onClick={() => { playSfx('ui_click', { volume: 0.4 }); setTechTreeVisible(true); }}
+            title="Tech Tree"
+          >
+            <img src="/assets2/UI/icon_gold.png" alt="Tech Tree" width={40} height={40} style={{ imageRendering: 'pixelated', display: 'block' }} />
           </button>
           <button
             style={{ ...ICON_BTN, opacity: muted ? 0.4 : 1 }}
