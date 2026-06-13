@@ -22,7 +22,7 @@ export function startAmbient(): void {
     : scene.cache.audio.exists('sfx_ambient_loop') ? 'sfx_ambient_loop' : null;
   if (!key) return;
   ambientStarted = true;
-  try { scene.sound.add(key, { loop: true, volume: 0.22 }).play(); } catch { /* ignore */ }
+  try { scene.sound.add(key, { loop: true, volume: 0.16 }).play(); } catch { /* ignore */ }
 }
 
 /**

@@ -184,11 +184,11 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   // shade cover a big contiguous swathe instead of a quilt of small patches. A
   // couple-tile jitter on the sample coords wanders the region edges so the
   // boundaries don't read as straight grid lines.
-  const BIOME = 13;
+  const BIOME = 20;
   const flatSheet = (c: number, r: number): string => {
     const off = (island[r][c] + 1) * 5;        // each island gets its own biome layout
-    const jx = (hash2(c, r * 3) % 5) - 2;       // ±2-tile edge wander
-    const jy = (hash2(c * 3, r) % 5) - 2;
+    const jx = (hash2(c, r * 3) % 7) - 3;       // ±3-tile edge wander
+    const jy = (hash2(c * 3, r) % 7) - 3;
     const v = hash2(Math.floor((c + jx) / BIOME) + off, Math.floor((r + jy) / BIOME)) % 6;
     return v < 3 ? FLAT[0] : v < 5 ? FLAT[1] : FLAT[2];
   };

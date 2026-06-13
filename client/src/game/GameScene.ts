@@ -126,7 +126,7 @@ export default class GameScene extends Phaser.Scene {
     if (this.beatClock === 0) this.beatClock = time;
     while (time - this.beatClock >= BEAT_MS) {
       this.beatClock += BEAT_MS;
-      playSfx('beat_drum', { volume: 0.3, throttleMs: 400, throttleKey: 'beat' });
+      playSfx('beat_drum', { volume: 0.55, throttleMs: 400, throttleKey: 'beat' });
     }
 
     this.unitGfx.forEach(u => {
