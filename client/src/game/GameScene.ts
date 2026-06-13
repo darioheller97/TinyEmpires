@@ -91,14 +91,18 @@ export default class GameScene extends Phaser.Scene {
   }
 
   update(): void {
-    // Smooth the 10Hz server updates and face the travel direction
+    // Units step on a beat — snap quickly toward each new step with a hop
     this.unitGfx.forEach(u => {
       const pos = u.container.getData('worldPos') as { x: number; y: number } | undefined;
       if (!pos) return;
       const dx = pos.x - u.container.x;
+      const dy = pos.y - u.container.y;
       if (Math.abs(dx) > 0.8) u.sprite.setFlipX(dx < 0);
-      u.container.x += dx * 0.25;
-      u.container.y += (pos.y - u.container.y) * 0.25;
+      u.container.x += dx * 0.45;
+      u.container.y += dy * 0.45;
+      // Little hop while covering a step
+      const dist = Math.hypot(dx, dy);
+      u.sprite.y = dist > 2 ? -Math.min(6, dist * 0.2) : 0;
       u.container.setDepth(DEPTH_ENTITY + u.container.y * 0.01);
     });
   }

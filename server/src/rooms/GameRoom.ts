@@ -29,6 +29,8 @@ const GOBLIN_BOUNTY = { wood: 0, food: 30, gold: 120 };
 
 const VILLAGER_COST_FOOD = 15;
 const VILLAGER_SPEED = 4.5;          // px per tick, walking off-road
+// Units advance on a rhythm (NecroDancer-style beat) instead of gliding
+const MOVE_BEAT_TICKS = 5;           // one step every 0.5s
 const VILLAGER_HARVEST_INTERVAL = 10; // ticks between harvest ticks
 const VILLAGER_SEARCH_RADIUS = 1400;  // from home city
 
@@ -396,17 +398,20 @@ export class GameRoom extends Room<GameState> {
         if (best) { unit.targetResourceId = best.id; target = best; }
       }
 
+      const onBeat = this.state.tick % MOVE_BEAT_TICKS === 0;
+      const stepLen = VILLAGER_SPEED * MOVE_BEAT_TICKS;
+
       if (!target) {
         // Nothing left to gather: drift home and wait
         unit.status = 'marching';
-        if (home) this.stepToward(unit, home.x, home.y + 50, VILLAGER_SPEED);
+        if (home && onBeat) this.stepToward(unit, home.x, home.y + 50, stepLen);
         return;
       }
 
       const d = Math.hypot(target.x - unit.x, target.y - unit.y);
       if (d > 28) {
         unit.status = 'marching';
-        this.stepToward(unit, target.x, target.y + 14, VILLAGER_SPEED);
+        if (onBeat) this.stepToward(unit, target.x, target.y + 14, stepLen);
         return;
       }
 
@@ -438,6 +443,8 @@ export class GameRoom extends Room<GameState> {
   // ─── Movement ───────────────────────────────────────────────
 
   private moveUnits(): void {
+    // March to the beat: discrete steps on a shared rhythm
+    if (this.state.tick % MOVE_BEAT_TICKS !== 0) return;
     const toRemove: string[] = [];
     this.state.units.forEach(unit => {
       if (unit.type === 'villager') return;
@@ -447,7 +454,7 @@ export class GameRoom extends Room<GameState> {
       const stats = TROOP_STATS[unit.type];
       if (!stats) { toRemove.push(unit.id); return; }
 
-      let speed = stats.speed;
+      let speed = stats.speed * MOVE_BEAT_TICKS;
       if (!unit.isPvE) {
         const owner = this.state.players.get(unit.ownerId);
         if (owner && owner.hasTech('speed')) speed *= 1.2;
