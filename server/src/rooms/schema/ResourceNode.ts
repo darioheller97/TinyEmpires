@@ -15,6 +15,8 @@ export class ResourceNode extends Schema {
   @type('number') y: number = 0;
   @type('number') amount: number = 100;
   @type('number') maxAmount: number = 100;
+  // Trees grow with age: an older tree holds (and yields) more wood, up to a cap.
+  @type('number') age: number = 0;
 
   constructor(id: string, type: ResourceType, x: number, y: number, amount: number) {
     super();

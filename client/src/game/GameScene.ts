@@ -442,16 +442,26 @@ export default class GameScene extends Phaser.Scene {
 
   // ── Resource nodes ─────────────────────────────────────────
   private drawResource(r: any): void {
+    // Younger trees are smaller; they swell back as they age (server `age`).
+    const treeMaturity = (age: number) => 0.45 + 0.55 * Math.min(1, (age || 0) / 30);
     const existing = this.resourceGfx.get(r.id);
-    if (existing) { Object.assign(existing.data, { amount: r.amount, maxAmount: r.maxAmount }); return; }
+    if (existing) {
+      Object.assign(existing.data, { amount: r.amount, maxAmount: r.maxAmount, age: r.age });
+      if (existing.data.type === 'tree') {
+        const sp = existing.gfx.getAt(0) as Phaser.GameObjects.Sprite;
+        sp.setScale((existing.data.baseScale as number) * treeMaturity(r.age));
+      }
+      return;
+    }
     const container = this.add.container(r.x, r.y);
     if (r.type === 'tree') {
       const species = 1 + ((r.x * 7 + r.y * 13) % 4); // deterministic species (incl. birch)
       // Vary size per tree so a cluster reads like a real forest
-      const scale = 0.55 + ((r.x * 17 + r.y * 31) % 100) / 100 * 0.4; // 0.55–0.95
-      const t = this.add.sprite(0, 0, `tree${species}`).setScale(scale).setOrigin(0.5, 0.82);
+      const baseScale = 0.55 + ((r.x * 17 + r.y * 31) % 100) / 100 * 0.4; // 0.55–0.95
+      const t = this.add.sprite(0, 0, `tree${species}`).setScale(baseScale * treeMaturity(r.age)).setOrigin(0.5, 0.82);
       t.play({ key: `tree${species}_anim`, startFrame: (r.x + r.y) % 8 });
       container.add(t);
+      (r as any)._baseScale = baseScale;
     } else if (r.type === 'sheep') {
       const s = this.add.sprite(0, 0, 'sheep2').setScale(0.7);
       s.play({ key: 'sheep2_anim', startFrame: (r.x + r.y) % 6 });
@@ -469,7 +479,7 @@ export default class GameScene extends Phaser.Scene {
     container.setDepth(DEPTH_ENTITY + r.y * 0.01);
     container.setInteractive(new Phaser.Geom.Rectangle(-28, -40, 56, 64), Phaser.Geom.Rectangle.Contains);
     const names: Record<string, string> = { tree: 'Forest', sheep: 'Sheep', gold: 'Gold Deposit' };
-    const entry = { gfx: container, data: { id: r.id, type: r.type, x: r.x, y: r.y, amount: r.amount, maxAmount: r.maxAmount } };
+    const entry = { gfx: container, data: { id: r.id, type: r.type, x: r.x, y: r.y, amount: r.amount, maxAmount: r.maxAmount, age: r.age, baseScale: (r as any)._baseScale ?? 1 } };
     container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('resource', r.id, names[r.type] || r.type, entry.data); });
     this.resourceGfx.set(r.id, entry);
   }

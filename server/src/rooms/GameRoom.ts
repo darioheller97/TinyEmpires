@@ -38,6 +38,8 @@ const SHEEP_REGEN_INTERVAL_TICKS = 30; // ~3s between sheep flock growth
 const SHEEP_REGEN_AMOUNT = 2;          // food units regrown per interval
 const ARCHER_DEF_RANGE = 280;          // how far tower/capital archers can shoot
 const ARCHER_DEF_DMG = 13;             // per archer shot (before armour)
+const TREE_GROW_INTERVAL_TICKS = 50;   // ~5s between tree growth ticks
+const TREE_AGE_CAP = 40;               // older trees hold more wood, to this cap
 
 /**
  * Rasterize a road spline into a 4-connected sequence of 64px tiles.
@@ -401,6 +403,7 @@ export class GameRoom extends Room<GameState> {
     this.processDefenseArchers();
     if (this.state.tick % HEAL_INTERVAL_TICKS === 0) this.processMonkHealing();
     if (this.state.tick % SHEEP_REGEN_INTERVAL_TICKS === 0) this.processSheepRegen();
+    if (this.state.tick % TREE_GROW_INTERVAL_TICKS === 0) this.processTreeGrowth();
     this.cleanupIdleGarrisons();
   }
 
@@ -568,10 +571,11 @@ export class GameRoom extends Room<GameState> {
         const take = Math.min(3, target.amount, VILLAGER_CARRY_CAP - unit.carrying);
         unit.carrying += take;
         target.amount -= take;
-        // Sheep flocks regrow (handled by processSheepRegen); trees/gold deplete.
-        if (target.amount <= 0 && target.type !== 'sheep') {
-          this.state.resources.delete(target.id);
-          unit.targetResourceId = '';
+        // Sheep regrow (processSheepRegen) and trees regrow as saplings
+        // (processTreeGrowth); only gold deposits are exhausted for good.
+        if (target.amount <= 0) {
+          if (target.type === 'gold') { this.state.resources.delete(target.id); unit.targetResourceId = ''; }
+          else if (target.type === 'tree') { target.age = 0; unit.targetResourceId = ''; } // chopped → sapling
         }
       }
     });
@@ -594,6 +598,19 @@ export class GameRoom extends Room<GameState> {
       if (r.type === 'sheep' && r.amount < r.maxAmount) {
         r.amount = Math.min(r.maxAmount, r.amount + SHEEP_REGEN_AMOUNT);
       }
+    });
+  }
+
+  /** Trees age and regrow in place: the older a tree, the more wood it holds
+   *  (its cap rises with age), so a long-standing forest yields more. A freshly
+   *  chopped tree is reset to a sapling (age 0) and grows back over time. */
+  private processTreeGrowth(): void {
+    this.state.resources.forEach(r => {
+      if (r.type !== 'tree') return;
+      if (r.age < TREE_AGE_CAP) r.age++;
+      const cap = 40 + r.age * 3;        // sapling 40 → old growth 160
+      r.maxAmount = cap;
+      if (r.amount < cap) r.amount = Math.min(cap, r.amount + 2);
     });
   }
 
