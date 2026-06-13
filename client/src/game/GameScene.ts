@@ -50,7 +50,7 @@ const DEPTH_ENTITY = 10; // + y*0.01 for painter's order
 interface UnitVisual {
   container: Phaser.GameObjects.Container;
   sprite: Phaser.GameObjects.Sprite;
-  hpBar: Phaser.GameObjects.Rectangle;
+  hpBar: Phaser.GameObjects.Container; // pack-art bar (base + red fill)
   base: string;
   anim: string;
 }
@@ -68,9 +68,11 @@ export default class GameScene extends Phaser.Scene {
   private buildingGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: BuildData }> = new Map();
   private lairGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: LairData }> = new Map();
   private unitGfx: Map<string, UnitVisual> = new Map();
-  private cityHealthBars: Map<string, Phaser.GameObjects.Graphics> = new Map();
-  private lairHealthBars: Map<string, Phaser.GameObjects.Graphics> = new Map();
+  private cityHealthBars: Map<string, Phaser.GameObjects.Container> = new Map();
+  private lairHealthBars: Map<string, Phaser.GameObjects.Container> = new Map();
   private selectionRing: Phaser.GameObjects.Graphics | null = null;
+  private glowTarget: Phaser.GameObjects.Container | null = null;
+  private glowTween: Phaser.Tweens.Tween | null = null;
   private routeArrowGfx: Phaser.GameObjects.Graphics | null = null;
 
   private selection: SelectionInfo = { type: 'none', id: '', name: '' };
@@ -340,7 +342,7 @@ export default class GameScene extends Phaser.Scene {
     const burning = data.health < data.maxHealth * 0.7;
     (gfx.getAt(2) as Phaser.GameObjects.Sprite).setVisible(burning);
     (gfx.getAt(3) as Phaser.GameObjects.Sprite).setVisible(data.health < data.maxHealth * 0.4);
-    this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 78, 60, data.health, data.maxHealth);
+    this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 82, 92, data.health, data.maxHealth, true);
   }
 
   private hashStr(s: string): number {
@@ -539,20 +541,35 @@ export default class GameScene extends Phaser.Scene {
     this.buildingGfx.forEach(e => e.gfx.setVisible(stateAt(e.data.x, e.data.y) >= 1));
   }
 
-  private updateBar(store: Map<string, Phaser.GameObjects.Graphics>, id: string, cx: number, y: number, width: number, hp: number, maxHp: number): void {
+  // Build a Tiny Swords health bar (wooden `bar_base` slot + red `bar_fill`).
+  // The fill grows from the left; its width is set per-update by setBarRatio.
+  private makeBar(width: number, height: number): Phaser.GameObjects.Container {
+    const c = this.add.container(0, 0);
+    const base = this.add.image(0, 0, 'bar_base').setOrigin(0.5).setDisplaySize(width, height);
+    const innerW = width * 0.82, innerH = height * 0.48;
+    const fill = this.add.image(-innerW / 2, 0, 'bar_fill').setOrigin(0, 0.5);
+    fill.setData('iw', innerW).setData('ih', innerH);
+    c.add([base, fill]);
+    c.setData('fill', fill);
+    return c;
+  }
+
+  private setBarRatio(c: Phaser.GameObjects.Container, ratio: number): void {
+    const fill = c.getData('fill') as Phaser.GameObjects.Image;
+    const r = Phaser.Math.Clamp(ratio, 0, 1);
+    fill.setDisplaySize((fill.getData('iw') as number) * r, fill.getData('ih') as number);
+  }
+
+  // World-positioned bar for cities (big) and lairs (small). Hidden at full HP.
+  private updateBar(store: Map<string, Phaser.GameObjects.Container>, id: string, cx: number, y: number, width: number, hp: number, maxHp: number, big = false): void {
     let bar = store.get(id);
-    if (hp >= maxHp) {
+    if (hp >= maxHp || hp <= 0) {
       if (bar) { bar.destroy(); store.delete(id); }
       return;
     }
-    if (!bar) { bar = this.add.graphics().setDepth(45); store.set(id, bar); }
-    const x = cx - width / 2;
-    const ratio = Math.max(0, hp / maxHp);
-    bar.clear();
-    bar.fillStyle(0x000000, 0.6);
-    bar.fillRect(x - 1, y - 1, width + 2, 7);
-    bar.fillStyle(ratio > 0.5 ? 0x44cc44 : ratio > 0.25 ? 0xcccc44 : 0xcc4444, 1);
-    bar.fillRect(x, y, width * ratio, 5);
+    if (!bar) { bar = this.makeBar(width, big ? 16 : 10).setDepth(big ? 46 : 45); store.set(id, bar); }
+    bar.setPosition(cx, y);
+    this.setBarRatio(bar, hp / maxHp);
   }
 
   // ── Units ─────────────────────────────────────────────────
@@ -575,8 +592,7 @@ export default class GameScene extends Phaser.Scene {
       }
       const ratio = unit.health / (unit.maxHealth || 100);
       existing.container.setData('hpRatio', ratio);
-      existing.hpBar.setScale(Math.max(0, ratio), 1);
-      existing.hpBar.setFillStyle(ratio > 0.5 ? 0x44cc44 : ratio > 0.25 ? 0xcccc44 : 0xcc4444);
+      this.setBarRatio(existing.hpBar, ratio);
       existing.hpBar.setVisible(unit.health < unit.maxHealth);
       return;
     }
@@ -587,7 +603,7 @@ export default class GameScene extends Phaser.Scene {
     const sprite = this.add.sprite(0, 0, `${skin.base}_idle`).setScale(skin.scale);
     const animKey = `${skin.base}_${desiredAnim}`;
     sprite.play(animKey);
-    const hpBar = this.add.rectangle(0, -34, 22, 4, 0x44cc44, 0.9);
+    const hpBar = this.makeBar(30, 9).setPosition(0, -34);
     hpBar.setVisible(false);
     container.add([sprite, hpBar]);
     container.setData('worldPos', pos);
@@ -671,10 +687,29 @@ export default class GameScene extends Phaser.Scene {
     if (onSelection) onSelection({ ...this.selection });
   }
 
+  // Make the active building/city glow so the player sees what's selected,
+  // instead of a hard ring. Pulses gently via the WebGL glow post-FX.
+  private setGlow(container: Phaser.GameObjects.Container | undefined | null): void {
+    this.clearGlow();
+    if (!container || !container.postFX) return;
+    const fx = container.postFX.addGlow(0xffe9a8, 2, 0, false, 0.08, 14);
+    this.glowTarget = container;
+    this.glowTween = this.tweens.add({
+      targets: fx, outerStrength: 6, duration: 650, yoyo: true, repeat: -1, ease: 'Sine.inOut',
+    });
+  }
+
+  private clearGlow(): void {
+    if (this.glowTween) { this.glowTween.stop(); this.glowTween = null; }
+    if (this.glowTarget && this.glowTarget.postFX) this.glowTarget.postFX.clear();
+    this.glowTarget = null;
+  }
+
   private redrawSelectionRing(): void {
     if (!this.selectionRing) return;
     this.selectionRing.clear();
-    const { type, data } = this.selection;
+    this.clearGlow();
+    const { type, id, data } = this.selection;
     if (!data) return;
     this.selectionRing.lineStyle(2, 0xffff00, 0.9);
     if (type === 'city') {
@@ -696,14 +731,13 @@ export default class GameScene extends Phaser.Scene {
           }
         }
       }
-      this.selectionRing.lineStyle(3, 0xffff00, 1);
-      this.selectionRing.strokeCircle(data.x, data.y, 70);
+      this.setGlow(this.cityGfx.get(id)?.gfx); // glow the fort, no ring
+    } else if (type === 'building') {
+      this.setGlow(this.buildingGfx.get(id)?.gfx); // glow the building, no ring
     } else if (type === 'resource') {
       this.selectionRing.strokeCircle(data.x, data.y, 30);
     } else if (type === 'intersection') {
       this.selectionRing.strokeCircle(data.x, data.y, 24);
-    } else if (type === 'building') {
-      this.selectionRing.strokeCircle(data.x, data.y, 34);
     }
   }
 
@@ -711,6 +745,7 @@ export default class GameScene extends Phaser.Scene {
     this.hideRadialMenu();
     this.selection = { type: 'none', id: '', name: '' };
     if (this.selectionRing) this.selectionRing.clear();
+    this.clearGlow();
     const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void);
     if (onSelection) onSelection({ ...this.selection });
   }

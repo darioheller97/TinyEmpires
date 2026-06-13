@@ -39,6 +39,18 @@ export const RIBBON: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+/** Wide blue ribbon banner for the top resource bar. */
+export const RIBBON_BAR: React.CSSProperties = {
+  borderStyle: 'solid',
+  borderWidth: '0 56px',
+  borderImage: `url(${U}/ribbon_blue.png) 0 62 fill stretch`,
+  imageRendering: 'pixelated',
+  color: '#fff',
+  textShadow: '0 2px 0 rgba(0,0,0,0.6)',
+  fontFamily: '"Trebuchet MS", Verdana, sans-serif',
+  fontWeight: 700,
+};
+
 export const BUTTON: React.CSSProperties = {
   borderStyle: 'solid',
   borderWidth: '17px 16px',

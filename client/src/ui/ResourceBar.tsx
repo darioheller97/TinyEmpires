@@ -1,5 +1,5 @@
 import React from 'react';
-import { PANEL, ICONS, RES_ICON } from './skin';
+import { RIBBON_BAR, ICONS, RES_ICON } from './skin';
 
 interface Props {
   resources: {
@@ -12,12 +12,14 @@ interface Props {
 }
 
 const BAR_STYLE: React.CSSProperties = {
-  ...PANEL,
+  ...RIBBON_BAR,
   display: 'flex',
-  gap: '14px',
+  gap: '16px',
   alignItems: 'center',
-  padding: '0 8px',
-  fontSize: '15px',
+  justifyContent: 'center',
+  height: '52px',
+  padding: '0 6px',
+  fontSize: '16px',
 };
 
 const ITEM_STYLE: React.CSSProperties = {
