@@ -7,7 +7,7 @@ import { Road } from './schema/Road';
 import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS, PRODUCES, producerFor } from './schema/BuildingNode';
 import { ResourceNode, ResourceType, HARVEST_RATE } from './schema/ResourceNode';
 import { LairNode } from './schema/LairNode';
-import { UnitNode, TROOP_STATS, TROOP_TYPES } from './schema/UnitNode';
+import { UnitNode, TROOP_STATS, TROOP_TYPES, RPS_ADVANTAGE } from './schema/UnitNode';
 import { Elevation } from './schema/Elevation';
 import { generateMap, computeLandGrid, generateElevations } from './MapGenerator';
 
@@ -40,6 +40,7 @@ const GOLD_REGEN_AMOUNT = 3;           // gold a vein slowly refills per interva
 const ARCHER_DEF_RANGE = 280;          // how far tower/capital archers can shoot
 const ARCHER_DEF_DMG = 13;             // per archer shot (before armour)
 const PVE_KILL_GOLD = 4;               // tiny gold a slain monster drops to its killer
+const AI_INTERVAL_TICKS = 20;          // bot empires reassess every ~2s
 const TREE_GROW_INTERVAL_TICKS = 50;   // ~5s between tree growth ticks
 const TREE_AGE_CAP = 40;               // older trees hold more wood, to this cap
 
@@ -96,6 +97,7 @@ export class GameRoom extends Room<GameState> {
   // Seed chosen by the host, applied when the match actually starts.
   private pendingSeed: number | undefined = undefined;
   private started = false;
+  private aiCount = 0; // AI opponent empires to spawn at match start (solo = 1)
 
   onCreate(options: any): void {
     console.log('GameRoom created!', options?.code ?? '(no code)');
@@ -143,6 +145,16 @@ export class GameRoom extends Room<GameState> {
       const city = cities.find(c => !c.ownerId);
       if (city) { city.ownerId = p.id; city.health = city.maxHealth; p.connectedCityId = city.id; }
     });
+    // AI rival empires take the next free capitals (placed far from the host).
+    for (let i = 0; i < this.aiCount; i++) {
+      const ci = this.firstFreeColorIndex();
+      const bot = new Player(`bot_${i + 1}`, 'Enemy AI', PLAYER_COLORS[ci % PLAYER_COLORS.length]);
+      bot.colorIndex = ci; bot.isBot = true;
+      bot.wood = 120; bot.food = 90; bot.gold = 30; // starting stash so it gets moving
+      const city = cities.find(c => !c.ownerId);
+      if (city) { city.ownerId = bot.id; city.health = city.maxHealth; bot.connectedCityId = city.id; }
+      this.state.players.set(bot.id, bot);
+    }
     this.state.phase = 'active';
     this.lock(); // no late joins once the match is running
     this.tickInterval = setInterval(() => this.gameTick(), 100);
@@ -472,8 +484,9 @@ export class GameRoom extends Room<GameState> {
     p.colorIndex = this.firstFreeColorIndex();
     p.colorHex = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
     this.state.players.set(client.sessionId, p);
-    // Solo games skip the lobby entirely: ready + start immediately.
-    if (options?.solo) { p.ready = true; this.startMatch(); }
+    // Solo games skip the lobby entirely: ready + start immediately, with one
+    // AI rival empire so there's actually someone to conquer.
+    if (options?.solo) { p.ready = true; this.aiCount = 1; this.startMatch(); }
   }
 
   onLeave(client: Client, consented: boolean): void {
@@ -492,6 +505,8 @@ export class GameRoom extends Room<GameState> {
       const next = this.state.players.values().next().value as Player | undefined;
       if (next) next.isHost = true;
     }
+    // A mid-match departure may leave a single empire standing.
+    this.checkVictory();
   }
 
   onDispose(): void { clearInterval(this.tickInterval); }
@@ -501,6 +516,7 @@ export class GameRoom extends Room<GameState> {
   private gameTick(): void {
     this.state.tick++;
     if (this.state.tick % ECONOMY_INTERVAL_TICKS === 0) this.processEconomy();
+    if (this.state.tick % AI_INTERVAL_TICKS === 0) this.processAI();
     this.processLairs();
     this.processAutoProduce();
     this.processVillagers();
@@ -542,6 +558,9 @@ export class GameRoom extends Room<GameState> {
       player.food += f;
       player.gold += g;
       player.populationCap = acc.pop;
+      // Bots don't micro villagers, so a flat stipend keeps them building and
+      // producing at a steady, beatable pace.
+      if (player.isBot) { player.wood += 7; player.food += 6; player.gold += 4; }
     });
   }
 
@@ -559,6 +578,75 @@ export class GameRoom extends Room<GameState> {
         b.lastAutoProduceTick = this.state.tick;
       }
     });
+  }
+
+  // ─── AI opponents ───────────────────────────────────────────
+  // A lightweight bot empire: build production, auto-train a balanced army,
+  // rally toward the nearest enemy/neutral fort, and upgrade when flush.
+  private processAI(): void {
+    this.state.players.forEach(bot => {
+      if (!bot.isBot || bot.eliminated) return;
+      this.state.cities.forEach(city => {
+        if (city.ownerId !== bot.id) return;
+        const builds = this.buildingsOf(city.id);
+        const has = (t: string) => builds.some(b => b.type === t);
+        // Build order: barracks → archery → house → tower.
+        if (builds.length < city.maxBuildings) {
+          if (!has('barracks')) this.botBuild(bot, city, 'barracks');
+          else if (!has('archery')) this.botBuild(bot, city, 'archery');
+          else if (!has('house')) this.botBuild(bot, city, 'house');
+          else if (!has('church')) this.botBuild(bot, city, 'church');
+        }
+        // Keep producers training a mixed army.
+        const bar = builds.find(b => b.type === 'barracks');
+        if (bar && !bar.autoProduceType) bar.autoProduceType = Math.random() < 0.5 ? 'knight' : 'lancer';
+        const arc = builds.find(b => b.type === 'archery');
+        if (arc && !arc.autoProduceType) arc.autoProduceType = 'archer';
+        // Point fresh troops at the nearest fort it doesn't own.
+        this.botSetRally(bot, city);
+        // Upgrade the keep when it can comfortably afford it.
+        if (city.townHallLevel < 3 && bot.gold > city.townHallLevel * 50 + 140) {
+          bot.gold -= city.townHallLevel * 50;
+          city.townHallLevel++;
+          this.recomputeInfluence(city);
+          city.maxBuildings = 2 + (city.townHallLevel - 1) * 2;
+          city.maxHealth = 1000 + (city.townHallLevel - 1) * 500;
+          city.health = city.maxHealth;
+        }
+      });
+    });
+  }
+
+  private botBuild(bot: Player, city: CityNode, type: BuildingType): void {
+    const cost = BUILDING_COSTS[type];
+    if (bot.wood < cost.wood || bot.food < cost.food || bot.gold < cost.gold) return;
+    bot.wood -= cost.wood; bot.food -= cost.food; bot.gold -= cost.gold;
+    const { x, y } = this.findBuildSpot(city, this.buildingsOf(city.id).length);
+    const bId = nextId('bld');
+    this.state.buildings.set(bId, new BuildingNode(bId, city.id, type, x, y));
+    this.recomputeInfluence(city);
+  }
+
+  private botSetRally(bot: Player, city: CityNode): void {
+    const exits = [...this.state.roads.values()].filter(r => r.fromId === city.id);
+    if (exits.length === 0) return;
+    let target: CityNode | null = null, bestD = Infinity;
+    this.state.cities.forEach(c => {
+      if (c.ownerId === bot.id) return;
+      const d = Math.hypot(c.x - city.x, c.y - city.y);
+      if (d < bestD) { bestD = d; target = c; }
+    });
+    if (!target) return;
+    const t = target as CityNode;
+    const tx = t.x - city.x, ty = t.y - city.y, tl = Math.hypot(tx, ty) || 1;
+    let best = exits[0], bestDot = -Infinity;
+    for (const r of exits) {
+      const dest = this.getNodePos(r.toId); if (!dest) continue;
+      const dx = dest.x - city.x, dy = dest.y - city.y, dl = Math.hypot(dx, dy) || 1;
+      const dot = (tx / tl) * (dx / dl) + (ty / tl) * (dy / dl);
+      if (dot > bestDot) { bestDot = dot; best = r; }
+    }
+    city.rallyRoadId = best.id;
   }
 
   // ─── PvE Lairs ──────────────────────────────────────────────
@@ -1033,6 +1121,11 @@ export class GameRoom extends Room<GameState> {
       base *= (this.state.npcPower || 1); // NPC power scales enemy damage
     }
 
+    // Counter triangle: knight > archer > lancer > knight. A favourable matchup
+    // hits ~1.5x, an unfavourable one ~0.7x, so unit composition matters.
+    if (RPS_ADVANTAGE[attacker.type] === defender.type) base *= 1.5;
+    else if (RPS_ADVANTAGE[defender.type] === attacker.type) base *= 0.7;
+
     // Armour soaks damage; the attacker's penetration ignores a fraction of it.
     // Knights (high armour) shrug off arrows; lancers (high pen) punch through.
     const armor = (dStats?.armor ?? 0) * (1 - aStats.armorPen);
@@ -1274,6 +1367,30 @@ export class GameRoom extends Room<GameState> {
       if (u && !u.isPvE) this.refundPop(u.ownerId);
       this.state.units.delete(id);
     });
+
+    this.checkVictory();
+  }
+
+  // Conquest victory: a player is alive while they hold at least one city.
+  // Losing your last city eliminates you; the last empire standing wins.
+  private checkVictory(): void {
+    if (this.state.phase !== 'active') return;
+    const cityCount = new Map<string, number>();
+    this.state.cities.forEach(c => { if (c.ownerId) cityCount.set(c.ownerId, (cityCount.get(c.ownerId) || 0) + 1); });
+    this.state.players.forEach(p => {
+      if (!p.eliminated && (cityCount.get(p.id) || 0) === 0) {
+        p.eliminated = true;
+        const rm: string[] = [];
+        this.state.units.forEach(u => { if (u.ownerId === p.id) rm.push(u.id); });
+        rm.forEach(id => this.state.units.delete(id));
+      }
+    });
+    const alive = [...this.state.players.values()].filter(p => !p.eliminated && (cityCount.get(p.id) || 0) > 0);
+    if (alive.length <= 1) {
+      this.state.phase = 'finished';
+      this.state.winnerId = alive.length === 1 ? alive[0].id : '';
+      if (this.tickInterval) clearInterval(this.tickInterval);
+    }
   }
 
   // ─── Support ────────────────────────────────────────────────

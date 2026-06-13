@@ -29,6 +29,7 @@ export class Player extends Schema {
   @type('number') colorIndex: number = -1; // -1 = unassigned; index into PLAYER_COLORS
   @type('boolean') isHost: boolean = false;
   @type('boolean') eliminated: boolean = false;
+  @type('boolean') isBot: boolean = false;
   lastEconomyTick: number = 0;
 
   // Tech flags (comma-separated string since Colyseus MapSchema is complex)
