@@ -218,7 +218,8 @@ export function autotileFrame(kind: 'grass' | 'sand', n: boolean, s: boolean, e:
   return kind === 'grass' ? row * 9 + col : row * 10 + col + 5;
 }
 
-// Cliff-face frames in the 9-wide grass sheet (south-facing plateau edge):
-// upper rocky body row (41–44) over the lower body/base row (50–53).
-export const CLIFF_TOP = { left: 41, mid: 42, right: 43, single: 44 } as const;
-export const CLIFF_BOT = { left: 50, mid: 51, right: 52, single: 53 } as const;
+// Cliff-face frames in the 9-wide grass sheet (south-facing edge). Two rows:
+// upper rocky body (41–44) and lower body with foam base (50–53). Index by run
+// position: 0 left end, 1/2 middle, 3 right end.
+export const CLIFF_UP = [41, 42, 43, 44] as const;
+export const CLIFF_LO = [50, 51, 52, 53] as const;

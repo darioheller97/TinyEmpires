@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { autotileFrame, CLIFF_TOP, CLIFF_BOT } from './assets';
+import { autotileFrame, CLIFF_UP, CLIFF_LO } from './assets';
 
 // Procedural terrain rendering: water everywhere, an organic grass island
 // covering cities/roads/lairs, sand paths as roads, foam coastline, forests
@@ -33,11 +33,6 @@ function hash2(a: number, b: number): number {
   let h = (a * 73856093) ^ (b * 19349663);
   h = Math.imul(h ^ (h >>> 13), 0x85ebca6b);
   return (h >>> 0);
-}
-function grassSheet(c: number, r: number): string {
-  const v = (hash2(Math.floor(c / 5), Math.floor(r / 5))
-    + hash2(Math.floor((c + 2) / 4), Math.floor((r + 3) / 4))) % 6;
-  return v < 4 ? 'grass2' : v < 5 ? 'grass3' : 'grass1'; // ~67% / ~17% / ~17%
 }
 
 function mulberry32(seed: number): () => number {
@@ -95,6 +90,29 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   }
   grown.forEach(([r, c]) => { grid[r][c] = GRASS; });
 
+  // ── Smooth coastlines: drop lone juts, fill lone holes (two passes) ──
+  for (let pass = 0; pass < 2; pass++) {
+    const ch: [number, number, number][] = [];
+    for (let r = 1; r < rows - 1; r++) {
+      for (let c = 1; c < cols - 1; c++) {
+        const n = (grid[r - 1][c] !== WATER ? 1 : 0) + (grid[r + 1][c] !== WATER ? 1 : 0)
+          + (grid[r][c - 1] !== WATER ? 1 : 0) + (grid[r][c + 1] !== WATER ? 1 : 0);
+        if (grid[r][c] !== WATER && n <= 1) ch.push([r, c, WATER]);        // lone land jut
+        else if (grid[r][c] === WATER && n >= 3) ch.push([r, c, GRASS]);   // lone water hole
+      }
+    }
+    ch.forEach(([r, c, v]) => { grid[r][c] = v; });
+  }
+  // Re-assert land beneath roads/cities so smoothing can't sever a connection
+  const ensureLand = (c: number, r: number) => {
+    if (r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] === WATER) grid[r][c] = GRASS;
+  };
+  input.roadSplines.forEach(sp => sp.forEach(p => ensureLand(Math.floor(p.x / TILE), Math.floor(p.y / TILE))));
+  input.cities.forEach(n => {
+    const c0 = Math.floor(n.x / TILE), r0 = Math.floor(n.y / TILE);
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) ensureLand(c0 + dc, r0 + dr);
+  });
+
   // ── Sand roads along splines (kept 4-connected so tiles join up) ──
   const markSand = (r: number, c: number) => {
     if (r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] !== WATER) grid[r][c] = SAND;
@@ -132,20 +150,47 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
     }
   });
 
-  // ── Render ──
+  // ── Region labels: each landmass + each plateau gets its own grass ──
+  const island: number[][] = Array.from({ length: rows }, () => Array(cols).fill(-1));
+  const plateau: number[][] = Array.from({ length: rows }, () => Array(cols).fill(-1));
+  const N4 = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  const flood = (sr: number, sc: number, lab: number[][], id: number, match: (r: number, c: number) => boolean) => {
+    const st: [number, number][] = [[sr, sc]]; lab[sr][sc] = id;
+    while (st.length) {
+      const [cr, cc] = st.pop()!;
+      for (const [dr, dc] of N4) {
+        const nr = cr + dr, nc = cc + dc;
+        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && lab[nr][nc] < 0 && match(nr, nc)) { lab[nr][nc] = id; st.push([nr, nc]); }
+      }
+    }
+  };
+  let islN = 0, platN = 0;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    if (grid[r][c] !== WATER && island[r][c] < 0) flood(r, c, island, islN++, (rr, cc) => grid[rr][cc] !== WATER);
+    if (grid[r][c] === ELEV && plateau[r][c] < 0) flood(r, c, plateau, platN++, (rr, cc) => grid[rr][cc] === ELEV);
+  }
+  const FLAT = ['grass2', 'grass3', 'grass1'];
+  const PLAT = ['grass1', 'grass3', 'grass2'];
+  const flatSheet = (c: number, r: number): string => {
+    const off = (island[r][c] + 1) * 7; // shift the noise per-island so they differ
+    const v = (hash2(Math.floor(c / 5) + off, Math.floor(r / 5))
+      + hash2(Math.floor((c + 2) / 4), Math.floor((r + 3) / 4) + off)) % 6;
+    return v < 4 ? FLAT[0] : v < 5 ? FLAT[1] : FLAT[2];
+  };
+
+  // ── Render base grass / sand ──
   const isLand = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] !== WATER;
   const isSand = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] === SAND;
   const isElev = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] === ELEV;
 
+  // One tiled water background instead of thousands of per-cell images
+  scene.add.tileSprite(0, 0, cols * TILE, rows * TILE, 'water_bg').setOrigin(0).setDepth(0);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const x = c * TILE, y = r * TILE;
-      scene.add.image(x, y, 'water_bg').setOrigin(0).setDepth(0);
       if (grid[r][c] === WATER) continue;
+      const x = c * TILE, y = r * TILE;
       const gFrame = autotileFrame('grass', isLand(r - 1, c), isLand(r + 1, c), isLand(r, c + 1), isLand(r, c - 1));
-      // Plateau tops get a fixed deeper shade so they read as raised; flat grass
-      // uses the patchy shade variants.
-      const sheet = grid[r][c] === ELEV ? 'grass3' : grassSheet(c, r);
+      const sheet = grid[r][c] === ELEV ? PLAT[((plateau[r][c] % 3) + 3) % 3] : flatSheet(c, r);
       scene.add.image(x, y, sheet, gFrame).setOrigin(0).setDepth(grid[r][c] === ELEV ? 6 : 2);
       if (grid[r][c] === SAND) {
         const sFrame = autotileFrame('sand', isSand(r - 1, c), isSand(r + 1, c), isSand(r, c + 1), isSand(r, c - 1));
@@ -154,22 +199,38 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
     }
   }
 
-  // ── Cliff faces on the south edge of each plateau (2 tiles tall) ──
+  // ── Cliffs (south-facing only, like the Tiny Swords look) ──
+  //  • coast: land that drops to water on its south edge → 2-tile rocky wall
+  //    with a foam base (frames 41–44 over 50–53).
+  //  • plateau: an elevated cell dropping to lower grass → 1-tile rocky face.
+  const cliffTop = new Set<number>(); // land cells fronted by a cliff (skip foam)
+  const cliffPart = (r: number, c: number, edge: (r: number, c: number) => boolean): number => {
+    if (!edge(r, c - 1)) return 0;   // left end
+    if (!edge(r, c + 1)) return 3;   // right end
+    return (c & 1) ? 1 : 2;          // middle (alternate for variety)
+  };
+  const southCoast = (r: number, c: number) => isLand(r, c) && !isLand(r + 1, c);
+  const platDrop = (r: number, c: number) => isElev(r, c) && isLand(r + 1, c) && !isElev(r + 1, c);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (!isElev(r, c) || isElev(r + 1, c)) continue; // only the southern rim
-      const leftEnd = !isElev(r, c - 1), rightEnd = !isElev(r, c + 1);
-      const part = leftEnd && rightEnd ? 'single' : leftEnd ? 'left' : rightEnd ? 'right' : 'mid';
       const x = c * TILE;
-      scene.add.image(x, (r + 1) * TILE, 'grass3', CLIFF_TOP[part]).setOrigin(0).setDepth(5 + (r + 1) * TILE * 0.01);
-      scene.add.image(x, (r + 2) * TILE, 'grass3', CLIFF_BOT[part]).setOrigin(0).setDepth(5 + (r + 2) * TILE * 0.01);
+      if (southCoast(r, c)) {
+        const i = cliffPart(r, c, southCoast);
+        scene.add.image(x, (r + 1) * TILE, 'grass1', CLIFF_UP[i]).setOrigin(0).setDepth(7 + r * 0.02);
+        scene.add.image(x, (r + 2) * TILE, 'grass1', CLIFF_LO[i]).setOrigin(0).setDepth(7 + r * 0.02 + 0.01);
+        cliffTop.add(r * cols + c);
+      } else if (platDrop(r, c)) {
+        const i = cliffPart(r, c, platDrop);
+        scene.add.image(x, (r + 1) * TILE, 'grass1', CLIFF_UP[i]).setOrigin(0).setDepth(7 + r * 0.02);
+        cliffTop.add(r * cols + c);
+      }
     }
   }
 
-  // ── Animated foam on every coast tile (ocean and lakes alike) ──
+  // ── Animated foam on coast tiles that aren't fronted by a cliff ──
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (grid[r][c] === WATER) continue;
+      if (grid[r][c] === WATER || cliffTop.has(r * cols + c)) continue;
       const coastal = !isLand(r - 1, c) || !isLand(r + 1, c) || !isLand(r, c - 1) || !isLand(r, c + 1);
       if (!coastal) continue;
       const p = cellCenter(c, r);

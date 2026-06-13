@@ -57,8 +57,12 @@ function buildSplinePoints(a: { x: number; y: number }, via: { x: number; y: num
   const all = [a, ...via, b];
   for (let i = 0; i < all.length - 1; i++) {
     const p0 = all[i], p1 = all[i + 1];
-    for (let s = 0; s <= 20; s++) {
-      const t = s / 20;
+    // Sample ≤40px apart so tile rasterization never skips a cell, but keep the
+    // point count modest for the (now multi-segment) orthogonal roads.
+    const len = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    const steps = Math.max(2, Math.ceil(len / 40));
+    for (let s = i === 0 ? 0 : 1; s <= steps; s++) {
+      const t = s / steps;
       pts.push({ x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t });
     }
   }

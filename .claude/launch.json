@@ -7,6 +7,13 @@
       "runtimeArgs": ["run", "dev"],
       "cwd": "client",
       "port": 3000
+    },
+    {
+      "name": "client-built",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "preview", "--port", "3000", "--strictPort"],
+      "cwd": "client",
+      "port": 3000
     }
   ]
 }

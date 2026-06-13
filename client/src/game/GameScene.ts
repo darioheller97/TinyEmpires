@@ -417,7 +417,9 @@ export default class GameScene extends Phaser.Scene {
     const container = this.add.container(r.x, r.y);
     if (r.type === 'tree') {
       const species = 1 + ((r.x * 7 + r.y * 13) % 4); // deterministic species (incl. birch)
-      const t = this.add.sprite(0, 0, `tree${species}`).setScale(0.7).setOrigin(0.5, 0.82);
+      // Vary size per tree so a cluster reads like a real forest
+      const scale = 0.55 + ((r.x * 17 + r.y * 31) % 100) / 100 * 0.4; // 0.55–0.95
+      const t = this.add.sprite(0, 0, `tree${species}`).setScale(scale).setOrigin(0.5, 0.82);
       t.play({ key: `tree${species}_anim`, startFrame: (r.x + r.y) % 8 });
       container.add(t);
     } else if (r.type === 'sheep') {
@@ -502,7 +504,9 @@ export default class GameScene extends Phaser.Scene {
       for (let c = 0; c < cols; c++) {
         const s = fog[r * cols + c];
         if (s === 2) continue;
-        this.fogGfx.fillStyle(s === 0 ? 0x2a3a52 : 0x06101c, s === 0 ? 0.92 : 0.4);
+        // Unexplored is fully opaque (you can't see through it); the cloud layer
+        // sits on top. Explored-but-unwatched is a lighter dim veil.
+        this.fogGfx.fillStyle(s === 0 ? 0x0b1622 : 0x06101c, s === 0 ? 1 : 0.45);
         this.fogGfx.fillRect(c * TILE, r * TILE, TILE, TILE);
       }
     }

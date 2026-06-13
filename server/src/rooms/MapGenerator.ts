@@ -163,17 +163,26 @@ export function generateMap(seed: number): GeneratedMap {
     if (!found) break;
   }
 
-  // ── Very gentle curve: one small via point keeps paths distinct ──
-  const edges: GenEdge[] = segments.map(s => {
-    const len = dist(s.a, s.b);
-    const nx = -(s.b.y - s.a.y) / len, ny = (s.b.x - s.a.x) / len;
-    const off = (rng() - 0.5) * Math.min(90, len * 0.08);
-    const via = [{
-      x: Math.round(s.a.x + (s.b.x - s.a.x) * 0.5 + nx * off),
-      y: Math.round(s.a.y + (s.b.y - s.a.y) * 0.5 + ny * off),
-    }];
-    return { a: s.a.id, b: s.b.id, via };
-  });
+  // ── Orthogonal routing: roads run straight, turning in coarse ~4-tile steps
+  //    instead of a fine 1-up-1-right diagonal staircase. ──
+  const STEP = 256; // 4 tiles per straight run before a turn
+  const staircaseVia = (a: GenNode, b: GenNode): { x: number; y: number }[] => {
+    const via: { x: number; y: number }[] = [];
+    let x = a.x, y = a.y;
+    const sx = Math.sign(b.x - x), sy = Math.sign(b.y - y);
+    let guard = 0;
+    while ((x !== b.x || y !== b.y) && guard++ < 500) {
+      // Advance whichever axis is lagging behind the straight diagonal, so the
+      // staircase hugs the direct line with long axis-aligned runs.
+      const px = b.x === a.x ? 1 : (x - a.x) / (b.x - a.x);
+      const py = b.y === a.y ? 1 : (y - a.y) / (b.y - a.y);
+      if (y === b.y || (px <= py && x !== b.x)) x += sx * Math.min(STEP, Math.abs(b.x - x));
+      else y += sy * Math.min(STEP, Math.abs(b.y - y));
+      if (x !== b.x || y !== b.y) via.push({ x: Math.round(x), y: Math.round(y) });
+    }
+    return via;
+  };
+  const edges: GenEdge[] = segments.map(s => ({ a: s.a.id, b: s.b.id, via: staircaseVia(s.a, s.b) }));
 
   // ── Resource nodes ──
   const resources: GenResource[] = [];
@@ -310,8 +319,8 @@ export function generateElevations(
     return true;
   };
   const out: GenElevation[] = [];
-  for (let a = 0; a < 900 && out.length < 16; a++) {
-    const rt = 1 + Math.floor(rng() * 2); // 1–2 tiles ⇒ 64–128px radius
+  for (let a = 0; a < 900 && out.length < 11; a++) {
+    const rt = 2 + Math.floor(rng() * 2); // 2–3 tiles ⇒ 128–192px radius
     const c = 2 + Math.floor(rng() * (cols - 4));
     const r = 2 + Math.floor(rng() * (rows - 4));
     const p = { x: c * TILE + TILE / 2, y: r * TILE + TILE / 2 };
