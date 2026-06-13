@@ -69,7 +69,8 @@ export class UnitNode extends Schema {
   targetNodeId: string = '';
   // Villagers: home city, current target node
   homeCityId: string = '';
-  targetResourceId: string = '';
+  // Synced so the client can highlight the node a clicked pawn is gathering.
+  @type('string') targetResourceId: string = '';
 
   constructor(id: string, ownerId: string, type: string, roadId: string) {
     super();

@@ -541,12 +541,15 @@ export class GameRoom extends Room<GameState> {
       if (!target || target.amount <= 0) {
         unit.targetResourceId = '';
         let best: ResourceNode | undefined;
-        let bestD = Infinity;
+        let bestScore = -Infinity;
         this.state.resources.forEach(r => {
           if (r.type !== unit.resourceType || r.amount <= 0) return;
           if (home && Math.hypot(r.x - home.x, r.y - home.y) > VILLAGER_SEARCH_RADIUS) return;
           const d = Math.hypot(r.x - unit.x, r.y - unit.y);
-          if (d < bestD) { bestD = d; best = r; }
+          // Woodcutters favour the biggest trees (most wood), lightly weighing
+          // distance; other gatherers just take the nearest node.
+          const score = unit.resourceType === 'tree' ? (r.amount - d * 0.15) : -d;
+          if (score > bestScore) { bestScore = score; best = r; }
         });
         if (best) { unit.targetResourceId = best.id; target = best; }
       }

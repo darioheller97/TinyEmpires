@@ -320,8 +320,9 @@ export default class GameScene extends Phaser.Scene {
     // Influence is shown as a terrain-tile highlight on selection instead
     const influence = this.add.circle(0, 0, city.influenceRadius, 0x4488ff, 0);
     influence.setVisible(false);
-    const castle = this.add.image(0, 0, city.ownerId ? `castle2_${factionOf(this.playerColors.get(city.ownerId))}` : 'castle_destroyed');
-    castle.setScale(0.5).setOrigin(0.5, 0.62);
+    // Unclaimed cities show an intact but greyed-out (neutral) fort, not a ruin.
+    const castle = this.add.image(0, 0, `castle2_${city.ownerId ? factionOf(this.playerColors.get(city.ownerId)) : 'Blue'}`);
+    castle.setScale(0.5).setOrigin(0.5, 0.62).setTint(city.ownerId ? 0xffffff : 0x8f9aa6);
     const fire = this.add.sprite(-30, -40, 'fire').setScale(0.8).setVisible(false);
     fire.play('fire_anim');
     const fire2 = this.add.sprite(34, -20, 'fire').setScale(0.6).setVisible(false);
@@ -337,8 +338,8 @@ export default class GameScene extends Phaser.Scene {
 
     // Two defending archers on the battlements (they do the fort's damage).
     const acolor = city.ownerId ? factionOf(this.playerColors.get(city.ownerId)) : 'Blue';
-    const arL = this.add.sprite(-30, -46, `u_${acolor}_archer_idle`).setScale(0.42).setVisible(!!city.ownerId);
-    const arR = this.add.sprite(30, -46, `u_${acolor}_archer_idle`).setScale(0.42).setFlipX(true).setVisible(!!city.ownerId);
+    const arL = this.add.sprite(-38, -38, `u_${acolor}_archer_idle`).setScale(0.42).setVisible(!!city.ownerId);
+    const arR = this.add.sprite(38, -38, `u_${acolor}_archer_idle`).setScale(0.42).setFlipX(true).setVisible(!!city.ownerId);
     if (city.ownerId) { arL.play(`u_${acolor}_archer_idle`); arR.play(`u_${acolor}_archer_idle`); }
     container.add([influence, castle, fire, fire2, nameLabel, levelLabel, arL, arR]);
     container.setDepth(DEPTH_ENTITY + city.y * 0.01);
@@ -351,8 +352,9 @@ export default class GameScene extends Phaser.Scene {
   private refreshCityVisual(entry: { gfx: Phaser.GameObjects.Container; data: CityData }): void {
     const { gfx, data } = entry;
     const castle = gfx.getAt(1) as Phaser.GameObjects.Image;
-    const key = data.ownerId ? `castle2_${factionOf(this.playerColors.get(data.ownerId))}` : 'castle_destroyed';
+    const key = `castle2_${data.ownerId ? factionOf(this.playerColors.get(data.ownerId)) : 'Blue'}`;
     if (castle.texture.key !== key) castle.setTexture(key);
+    castle.setTint(data.ownerId ? 0xffffff : 0x8f9aa6); // grey when unclaimed
     (gfx.getAt(5) as Phaser.GameObjects.Text).setText(`Lv.${data.townHallLevel}`);
     // Burning when badly damaged
     const burning = data.health < data.maxHealth * 0.7;
@@ -669,6 +671,7 @@ export default class GameScene extends Phaser.Scene {
 
     if (existing) {
       if (pos) existing.container.setData('worldPos', pos);
+      existing.container.setData('targetResourceId', unit.targetResourceId);
       const animKey = `${existing.base}_${desiredAnim}`;
       if (existing.anim !== animKey) {
         existing.sprite.play(animKey);
@@ -699,8 +702,27 @@ export default class GameScene extends Phaser.Scene {
     container.setData('worldPos', pos);
     container.setData('ownerId', unit.ownerId);
     container.setData('isVillager', unit.type === 'villager');
+    container.setData('targetResourceId', unit.targetResourceId);
     container.setDepth(DEPTH_ENTITY + pos.y * 0.01);
+    // Click a pawn to flash the node it's currently gathering.
+    if (unit.type === 'villager') {
+      container.setInteractive(new Phaser.Geom.Circle(0, 0, 22), Phaser.Geom.Circle.Contains);
+      container.on('pointerup', () => { if (!this.dragMoved) this.highlightVillagerResource(unit.id); });
+    }
     this.unitGfx.set(unit.id, { container, sprite, hpBar, base: skin.base, anim: animKey });
+  }
+
+  // Flash a ring around the resource node the clicked pawn is gathering.
+  private highlightVillagerResource(unitId: string): void {
+    const entry = this.unitGfx.get(unitId);
+    if (!entry) return;
+    const resId = entry.container.getData('targetResourceId') as string;
+    const res = resId ? this.resourceGfx.get(resId) : undefined;
+    playSfx('ui_click', { volume: 0.4, throttleMs: 60 });
+    if (!res) return;
+    const g = this.add.graphics().setDepth(199);
+    g.lineStyle(3, 0xffe87a, 1).strokeCircle(res.data.x, res.data.y, 36);
+    this.tweens.add({ targets: g, alpha: 0, duration: 2200, ease: 'Power2', onComplete: () => g.destroy() });
   }
 
   private removeUnitVisual(id: string, died: boolean): void {
