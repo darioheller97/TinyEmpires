@@ -96,9 +96,11 @@ export default class GameScene extends Phaser.Scene {
       const pos = u.container.getData('worldPos') as { x: number; y: number } | undefined;
       if (!pos) return;
       const villager = u.container.getData('isVillager') === true;
-      const dx = pos.x - u.container.x;
-      const dy = pos.y - u.container.y;
+      let dx = pos.x - u.container.x;
+      let dy = pos.y - u.container.y;
       if (Math.abs(dx) > 0.8) u.sprite.setFlipX(dx < 0);
+      // Road units take diagonals as a staircase: sideways first, then up/down
+      if (!villager && Math.abs(dx) > 3 && Math.abs(dy) > 3) dy = 0;
       const lerp = villager ? 0.25 : 0.45;
       u.container.x += dx * lerp;
       u.container.y += dy * lerp;
@@ -587,7 +589,13 @@ export default class GameScene extends Phaser.Scene {
     const frac = idx - i;
     const p0 = pts[Math.min(i, pts.length - 1)];
     const p1 = pts[Math.min(i + 1, pts.length - 1)];
-    return { x: p0.x + (p1.x - p0.x) * frac, y: p0.y + (p1.y - p0.y) * frac };
+    const x = p0.x + (p1.x - p0.x) * frac;
+    const y = p0.y + (p1.y - p0.y) * frac;
+    // Snap to the center of the road tile so hops land tile-to-tile
+    return {
+      x: (Math.floor(x / TILE) + 0.5) * TILE,
+      y: (Math.floor(y / TILE) + 0.5) * TILE,
+    };
   }
 
   private showFloatingDamage(x: number, y: number, amount: number, color: string = '#ff4444'): void {

@@ -5,7 +5,7 @@ export const TECH_TREE = [
   { id: 'dmg_lancer', name: 'Lancer Training', desc: '+25% Lancer damage', cost: 50, category: 'unit' },
   { id: 'dmg_archer', name: 'Archer Training', desc: '+25% Archer damage', cost: 50, category: 'unit' },
   { id: 'hp_all', name: 'Veteran Armor', desc: '+20% all unit HP', cost: 80, category: 'unit' },
-  { id: 'speed', name: 'Paved Roads', desc: '+20% move speed', cost: 60, category: 'unit' },
+  { id: 'speed', name: 'Paved Roads', desc: '+25% villager speed', cost: 60, category: 'economy' },
   { id: 'prod_wood', name: 'Iron Axes', desc: '+50% wood production', cost: 40, category: 'economy' },
   { id: 'prod_food', name: 'Crop Rotation', desc: '+50% food production', cost: 40, category: 'economy' },
   { id: 'prod_gold', name: 'Deep Mining', desc: '+50% gold production', cost: 40, category: 'economy' },

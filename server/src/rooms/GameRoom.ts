@@ -98,10 +98,10 @@ export class GameRoom extends Room<GameState> {
       this.state.roads.set(rId, new Road(rId, e.b, e.a, rev));
       this.reverseRoad.set(fId, rId);
       this.reverseRoad.set(rId, fId);
-      // One walkable tile slot per ~56px of road
+      // One walkable tile slot per 64px (terrain tile) of road
       let len = 0;
       for (let p = 1; p < fwd.length; p++) len += Math.hypot(fwd[p].x - fwd[p - 1].x, fwd[p].y - fwd[p - 1].y);
-      this.pairSlots.set(fId < rId ? fId : rId, Math.max(3, Math.round(len / 56)));
+      this.pairSlots.set(fId < rId ? fId : rId, Math.max(3, Math.round(len / 64)));
       const lair = this.state.lairs.get(e.a);
       if (lair) lair.roadId = fId;
     });
@@ -131,9 +131,10 @@ export class GameRoom extends Room<GameState> {
       const cost = BUILDING_COSTS[bt];
       if (player.wood < cost.wood || player.food < cost.food || player.gold < cost.gold) return;
       player.wood -= cost.wood; player.food -= cost.food; player.gold -= cost.gold;
+      // Ring sits clear of the castle sprite (~90px tall above the node)
       const count = this.buildingsOf(city.id).length;
       const angle = count * (Math.PI * 2 / 8) + Math.PI / 8;
-      const radius = 70 + 22 * Math.floor(count / 8);
+      const radius = 130 + 30 * Math.floor(count / 8);
       const bId = nextId('bld');
       this.state.buildings.set(bId, new BuildingNode(bId, city.id, bt, city.x + Math.cos(angle) * radius, city.y + Math.sin(angle) * radius));
     });
@@ -405,18 +406,20 @@ export class GameRoom extends Room<GameState> {
         if (best) { unit.targetResourceId = best.id; target = best; }
       }
 
-      // Villagers walk smoothly (no marching beat)
+      // Villagers walk smoothly (no marching beat); Paved Roads speeds them up
+      let vSpeed = VILLAGER_SPEED;
+      if (player.hasTech('speed')) vSpeed *= 1.25;
       if (!target) {
         // Nothing left to gather: drift home and wait
         unit.status = 'marching';
-        if (home) this.stepToward(unit, home.x, home.y + 50, VILLAGER_SPEED);
+        if (home) this.stepToward(unit, home.x, home.y + 50, vSpeed);
         return;
       }
 
       const d = Math.hypot(target.x - unit.x, target.y - unit.y);
       if (d > 28) {
         unit.status = 'marching';
-        this.stepToward(unit, target.x, target.y + 14, VILLAGER_SPEED);
+        this.stepToward(unit, target.x, target.y + 14, vSpeed);
         return;
       }
 
@@ -492,23 +495,12 @@ export class GameRoom extends Room<GameState> {
       if (unit.status === 'fighting' || unit.status === 'sieging' || unit.status === 'defending') continue;
       const road = this.state.roads.get(unit.roadId);
       if (!road) { toRemove.push(unit.id); this.refundPop(unit.ownerId); continue; }
-      const stats = TROOP_STATS[unit.type];
-      if (!stats) { toRemove.push(unit.id); continue; }
+      if (!TROOP_STATS[unit.type]) { toRemove.push(unit.id); continue; }
 
-      let speed = stats.speed * MOVE_BEAT_TICKS;
-      if (!unit.isPvE) {
-        const owner = this.state.players.get(unit.ownerId);
-        if (owner && owner.hasTech('speed')) speed *= 1.2;
-      }
+      // Everyone marches to the same drum: exactly one tile per beat
       const slots = this.slotsOf(unit.roadId);
-      const step = 1 / slots;
-      // Faster units bank movement and step on more beats than slow ones
-      unit.moveAcc = Math.min(unit.moveAcc + speed, step * 2);
-      if (unit.moveAcc < step) continue;
-
       const slot = Math.round(unit.t * slots);
       if (slot + 1 >= slots) {
-        unit.moveAcc = 0;
         const targetId = road.toId;
         const fromKey = this.canonSlotKey(unit.roadId, slot);
         if (this.state.cities.has(targetId)) {
@@ -534,7 +526,6 @@ export class GameRoom extends Room<GameState> {
 
       const nextKey = this.canonSlotKey(unit.roadId, slot + 1);
       if (occ.has(nextKey)) continue; // tile taken — wait (or fight, if it's an enemy)
-      unit.moveAcc -= step;
       occ.delete(this.canonSlotKey(unit.roadId, slot));
       unit.t = (slot + 1) / slots;
       occ.set(nextKey, unit.id);
