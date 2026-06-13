@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
-import GameScene, { SelectionInfo, MinimapData } from './GameScene';
+import GameScene, { SelectionInfo, MinimapData, GameEvent } from './GameScene';
 import { GameClient } from '../network/GameClient';
 
 interface Props {
@@ -11,10 +11,11 @@ interface Props {
   onBuildingsUpdate?: (counts: Map<string, number>) => void;
   onTechsUpdate?: (techs: string[]) => void;
   onMinimapData?: (data: MinimapData) => void;
+  onGameEvent?: (e: GameEvent) => void;
   onSceneReady?: (scene: GameScene) => void;
 }
 
-export default function PhaserGame({ client, onResourceUpdate, onMapBounds, onSelectionChange, onBuildingsUpdate, onTechsUpdate, onMinimapData, onSceneReady }: Props) {
+export default function PhaserGame({ client, onResourceUpdate, onMapBounds, onSelectionChange, onBuildingsUpdate, onTechsUpdate, onMinimapData, onGameEvent, onSceneReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
 
@@ -45,6 +46,7 @@ export default function PhaserGame({ client, onResourceUpdate, onMapBounds, onSe
       if (onBuildingsUpdate) game.registry.set('onBuildingsUpdate', onBuildingsUpdate);
       if (onTechsUpdate) game.registry.set('onTechsUpdate', onTechsUpdate);
       if (onMinimapData) game.registry.set('onMinimapData', onMinimapData);
+      if (onGameEvent) game.registry.set('onGameEvent', onGameEvent);
 
       game.events.on('ready', () => {
         const scene = game.scene.getScene('GameScene') as GameScene;

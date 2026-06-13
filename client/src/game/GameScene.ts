@@ -47,6 +47,12 @@ export interface SelectionInfo {
   type: SelectionType; id: string; name: string; data?: any;
 }
 
+// A HUD notification (toast + optional minimap ping) emitted by the scene.
+export interface GameEvent {
+  id: number; kind: string; text: string;
+  x?: number; y?: number; color?: string;
+}
+
 export interface MinimapData {
   width: number; height: number;
   // Fog mask: cols*rows bytes (0 unexplored, 1 explored, 2 visible) + grid dims.
@@ -125,6 +131,10 @@ export default class GameScene extends Phaser.Scene {
   private prevPhase = '';
   private myTechs: Set<string> | null = null;
   private lastBurstAt: Map<string, number> = new Map();
+  // HUD event feed (toasts + minimap pings) + per-key throttle.
+  private eventSeq = 0;
+  private lastEventAt: Map<string, number> = new Map();
+  private battleArrows: Phaser.GameObjects.Graphics | null = null;
 
   constructor() { super({ key: 'GameScene' }); }
 
@@ -147,6 +157,9 @@ export default class GameScene extends Phaser.Scene {
     // Cosmetic combat tick: archers (capital, towers, field units) loose arrows
     // at nearby enemies. Purely visual — the server owns the actual damage.
     this.time.addEvent({ delay: 700, loop: true, callback: () => this.tickArcherFx() });
+    // Screen-space overlay for off-screen battle arrows (camera-locked).
+    this.battleArrows = this.add.graphics().setScrollFactor(0).setDepth(220);
+    this.time.addEvent({ delay: 120, loop: true, callback: () => this.tickBattleArrows() });
   }
 
   update(time: number): void {
@@ -1182,6 +1195,67 @@ export default class GameScene extends Phaser.Scene {
     this.dustRing(x, y);
   }
 
+  // Push a notification to the HUD (toast + optional minimap ping). A throttle
+  // key/window stops repeat events (e.g. a fort taking damage every beat) from
+  // flooding the feed.
+  private emitEvent(kind: string, text: string, opts: { x?: number; y?: number; color?: string; throttleKey?: string; throttleMs?: number } = {}): void {
+    const key = opts.throttleKey ?? kind;
+    const now = this.time.now;
+    if (opts.throttleMs && now - (this.lastEventAt.get(key) ?? -1e9) < opts.throttleMs) return;
+    this.lastEventAt.set(key, now);
+    const cb = this.game.registry.get('onGameEvent') as ((e: GameEvent) => void) | undefined;
+    if (cb) cb({ id: ++this.eventSeq, kind, text, x: opts.x, y: opts.y, color: opts.color });
+  }
+
+  // Screen-edge arrows pointing at off-screen battles involving my units, so a
+  // fight in another lane never goes unnoticed. Drawn in screen space (camera-
+  // locked) and refreshed on a timer.
+  private tickBattleArrows(): void {
+    if (!this.battleArrows) return;
+    const g = this.battleArrows;
+    g.clear();
+    const myId = this.client?.sessionId;
+    if (!myId) return;
+    const view = this.cameras.main.worldView;
+    // Cluster my off-screen fighting units into a few rough battle centres.
+    const clusters: { x: number; y: number; n: number }[] = [];
+    this.unitGfx.forEach(u => {
+      if (u.container.getData('fighting') !== true) return;
+      if (u.container.getData('ownerId') !== myId) return;
+      const x = u.container.x, y = u.container.y;
+      if (Phaser.Geom.Rectangle.Contains(view, x, y)) return; // on-screen already
+      const c = clusters.find(c => Math.hypot(c.x - x, c.y - y) < 600);
+      if (c) { c.x = (c.x * c.n + x) / (c.n + 1); c.y = (c.y * c.n + y) / (c.n + 1); c.n++; }
+      else clusters.push({ x, y, n: 1 });
+    });
+    if (clusters.length === 0) return;
+    const cam = this.cameras.main;
+    const sw = cam.width, sh = cam.height;
+    const cx = sw / 2, cy = sh / 2;
+    const pulse = 0.55 + 0.45 * Math.abs(Math.sin(this.time.now / 260));
+    clusters.slice(0, 4).forEach(cl => {
+      // Direction from screen centre to the battle, in screen space.
+      const sx = (cl.x - cam.scrollX) * cam.zoom, sy = (cl.y - cam.scrollY) * cam.zoom;
+      const ang = Math.atan2(sy - cy, sx - cx);
+      const m = 30; // edge margin
+      const hw = cx - m, hh = cy - m;
+      // Clamp the centre→battle ray to the screen rectangle edge.
+      const tx = Math.abs(Math.cos(ang)) < 1e-3 ? Infinity : hw / Math.abs(Math.cos(ang));
+      const ty = Math.abs(Math.sin(ang)) < 1e-3 ? Infinity : hh / Math.abs(Math.sin(ang));
+      const t = Math.min(tx, ty);
+      const ex = cx + Math.cos(ang) * t, ey = cy + Math.sin(ang) * t;
+      g.fillStyle(0xff5a4a, pulse);
+      g.lineStyle(2, 0x3a1410, pulse);
+      // A triangle pointing outward along `ang`.
+      const s = 13;
+      const p1 = { x: ex + Math.cos(ang) * s, y: ey + Math.sin(ang) * s };
+      const p2 = { x: ex + Math.cos(ang + 2.5) * s, y: ey + Math.sin(ang + 2.5) * s };
+      const p3 = { x: ex + Math.cos(ang - 2.5) * s, y: ey + Math.sin(ang - 2.5) * s };
+      g.fillTriangle(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+      g.strokeTriangle(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+    });
+  }
+
   /** Shake the camera, but only when the event is on (or near) screen. */
   private shakeAt(x: number, y: number, intensity: number, duration: number): void {
     const v = this.cameras.main.worldView;
@@ -1533,11 +1607,14 @@ export default class GameScene extends Phaser.Scene {
         const involved = (!!myId && (s.ownerId === myId || prevOwner === myId));
         const color = newReal ? (this.playerColors.get(s.ownerId) || '#cccccc') : '#9aa3ad';
         this.captureFlourish(entry.data.x, entry.data.y, color, mine, involved);
+        if (mine) this.emitEvent('capture', `🏰 Captured ${entry.data.name}!`, { x: entry.data.x, y: entry.data.y, color: '#7ad17a' });
+        else if (prevOwner === myId) this.emitEvent('lost', `💀 Lost ${entry.data.name}!`, { x: entry.data.x, y: entry.data.y, color: '#ff6a5a' });
       }
       // Town-hall level-up flourish for my own keep.
       if (myId && s.townHallLevel > prevLevel && s.ownerId === myId && this.time.now - this.mapReadyAt > 1500) {
         this.sparkleRing(entry.data.x, entry.data.y - 10, this.playerColors.get(myId) || '#ffe87a');
         playSfx('coins_gold', { volume: 0.5, x: entry.data.x, y: entry.data.y });
+        this.emitEvent('levelup', `⬆ ${entry.data.name} reached Lv.${s.townHallLevel}`, { x: entry.data.x, y: entry.data.y, color: '#ffe87a' });
       }
       entry.data.ownerId = s.ownerId;
       entry.data.townHallLevel = s.townHallLevel;
@@ -1547,6 +1624,13 @@ export default class GameScene extends Phaser.Scene {
       entry.data.maxHealth = s.maxHealth;
       if (prevHealth > s.health) {
         this.showFloatingDamage(entry.data.x, entry.data.y - 40, prevHealth - s.health, '#ff8800');
+        // Raid warning when one of my forts is being hit (throttled per fort).
+        if (myId && s.ownerId === myId) {
+          this.emitEvent('attack', `⚔ ${entry.data.name} is under attack!`, {
+            x: entry.data.x, y: entry.data.y, color: '#ff5a4a',
+            throttleKey: `attack_${id}`, throttleMs: 7000,
+          });
+        }
       }
       this.refreshCityVisual(entry);
     });
@@ -1647,6 +1731,7 @@ export default class GameScene extends Phaser.Scene {
               this.sparkleRing(home.data.x, home.data.y - 10, this.playerColors.get(myId) || '#9cff7a');
               playSfx('coins_gold', { volume: 0.45, x: home.data.x, y: home.data.y });
             }
+            this.emitEvent('tech', `🔬 Research complete (${fresh.length} new)`, { color: '#9cff7a' });
           }
         }
       }

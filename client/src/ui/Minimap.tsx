@@ -1,10 +1,17 @@
 import React from 'react';
 import { MinimapData } from '../game/GameScene';
 
+export interface MinimapPing {
+  id: number; x: number; y: number; color: string; ts: number;
+}
+
 interface Props {
   data: MinimapData | null;
+  pings?: MinimapPing[];
   onNavigate: (x: number, y: number) => void;
 }
+
+const PING_MS = 2500;
 
 const MINIMAP_W = 180;
 const MINIMAP_H = 110;
@@ -26,10 +33,14 @@ const CANVAS_STYLE: React.CSSProperties = {
   imageRendering: 'pixelated',
 };
 
-export default function Minimap({ data, onNavigate }: Props) {
+export default function Minimap({ data, pings, onNavigate }: Props) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const pingCanvasRef = React.useRef<HTMLCanvasElement>(null);
   // Offscreen fog buffer at tile resolution, scaled up onto the minimap.
   const fogCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  // Keep the latest pings in a ref so the rAF loop sees them without restarting.
+  const pingsRef = React.useRef<MinimapPing[]>([]);
+  pingsRef.current = pings || [];
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -113,6 +124,45 @@ export default function Minimap({ data, onNavigate }: Props) {
     }
   }, [data]);
 
+  // Animated alert pings: expanding rings on an overlay canvas, driven by rAF so
+  // they pulse independently of the throttled map redraw.
+  React.useEffect(() => {
+    const canvas = pingCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    let raf = 0;
+    const draw = () => {
+      ctx.clearRect(0, 0, MINIMAP_W, MINIMAP_H);
+      const now = Date.now();
+      const w = data?.width || 0, h = data?.height || 0;
+      if (w > 0 && h > 0) {
+        for (const p of pingsRef.current) {
+          const age = now - p.ts;
+          if (age < 0 || age > PING_MS) continue;
+          const t = age / PING_MS;
+          const px = (p.x / w) * MINIMAP_W, py = (p.y / h) * MINIMAP_H;
+          ctx.strokeStyle = p.color;
+          ctx.globalAlpha = 1 - t;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(px, py, 2 + t * 12, 0, Math.PI * 2);
+          ctx.stroke();
+          // A solid dot at the centre so the location reads even between rings.
+          ctx.globalAlpha = 0.9 * (1 - t);
+          ctx.beginPath();
+          ctx.arc(px, py, 2, 0, Math.PI * 2);
+          ctx.fillStyle = p.color;
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [data]);
+
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!data) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -129,6 +179,12 @@ export default function Minimap({ data, onNavigate }: Props) {
         height={MINIMAP_H}
         style={CANVAS_STYLE}
         onClick={handleClick}
+      />
+      <canvas
+        ref={pingCanvasRef}
+        width={MINIMAP_W}
+        height={MINIMAP_H}
+        style={{ ...CANVAS_STYLE, position: 'absolute', inset: 0, pointerEvents: 'none' }}
       />
     </div>
   );

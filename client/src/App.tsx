@@ -1,8 +1,9 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import PhaserGame from './game/PhaserGame';
-import GameScene, { SelectionInfo, MinimapData } from './game/GameScene';
+import GameScene, { SelectionInfo, MinimapData, GameEvent } from './game/GameScene';
 import ResourceBar from './ui/ResourceBar';
-import Minimap from './ui/Minimap';
+import Minimap, { MinimapPing } from './ui/Minimap';
+import EventFeed, { FeedItem } from './ui/EventFeed';
 import BuildMenu, { BuildOption } from './ui/BuildMenu';
 import InfoPanel from './ui/InfoPanel';
 import SpawnPanel from './ui/SpawnPanel';
@@ -85,6 +86,8 @@ export default function App() {
   const [techTreeVisible, setTechTreeVisible] = useState(false);
   const [researchedTechs, setResearchedTechs] = useState<string[]>([]);
   const [minimapData, setMinimapData] = useState<MinimapData | null>(null);
+  const [events, setEvents] = useState<FeedItem[]>([]);
+  const [pings, setPings] = useState<MinimapPing[]>([]);
   const [muted, setMuted] = useState(false);
   const sceneRef = useRef<GameScene | null>(null);
   const prevGold = useRef(20);
@@ -148,6 +151,16 @@ export default function App() {
   const handleBuildingsUpdate = useCallback((counts: Map<string, number>) => setBuildingCounts(counts), []);
   const handleTechsUpdate = useCallback((techs: string[]) => setResearchedTechs(techs), []);
   const handleMinimapData = useCallback((d: MinimapData) => setMinimapData(d), []);
+  const handleGameEvent = useCallback((e: GameEvent) => {
+    const ts = Date.now();
+    setEvents(prev => [...prev.slice(-4), { ...e, ts }]);
+    setTimeout(() => setEvents(prev => prev.filter(x => x.id !== e.id)), 4500);
+    if (e.x != null && e.y != null) {
+      const ping: MinimapPing = { id: e.id, x: e.x, y: e.y, color: e.color || '#ffd54a', ts };
+      setPings(prev => [...prev.slice(-6), ping]);
+      setTimeout(() => setPings(prev => prev.filter(p => p.id !== e.id)), 2600);
+    }
+  }, []);
   const handleSceneReady = useCallback((scene: GameScene) => { sceneRef.current = scene; }, []);
   const handleMapBounds = useCallback(() => {}, []);
 
@@ -217,6 +230,7 @@ export default function App() {
         onBuildingsUpdate={handleBuildingsUpdate}
         onTechsUpdate={handleTechsUpdate}
         onMinimapData={handleMinimapData}
+        onGameEvent={handleGameEvent}
         onSceneReady={handleSceneReady}
       />
 
@@ -241,8 +255,9 @@ export default function App() {
           </button>
         </div>
         <div style={TOP_RIGHT}>
-          <Minimap data={minimapData} onNavigate={handleNavigate} />
+          <Minimap data={minimapData} pings={pings} onNavigate={handleNavigate} />
         </div>
+        <EventFeed items={events} />
         <div style={{ ...BOTTOM_MIDDLE, display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
           <BuildMenu
             visible={isOwnCity}
