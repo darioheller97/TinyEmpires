@@ -23,14 +23,21 @@ const A2 = 'assets2';
 // Remastered units: one spritesheet per (colour, class, state). Square frames
 // (192px; Lancer 320px). Black skins the PvE enemies.
 export const UNIT_COLORS = [...FACTION_COLORS, 'Black'] as const;
-type UnitState = 'idle' | 'walk' | 'attack' | 'mine';
+type UnitState = 'idle' | 'walk' | 'attack' | 'mine' | 'butcher' | 'carrywood' | 'carrymeat' | 'carrygold';
 interface ClassDef { fw: number; frames: number; files: Partial<Record<UnitState, [string, number]>>; }
 export const UNIT_CLASSES: Record<string, ClassDef> = {
   warrior: { fw: 192, frames: 8, files: { idle: ['Warrior/Warrior_Idle', 8], walk: ['Warrior/Warrior_Run', 6], attack: ['Warrior/Warrior_Attack1', 4] } },
   archer:  { fw: 192, frames: 8, files: { idle: ['Archer/Archer_Idle', 6], walk: ['Archer/Archer_Run', 4], attack: ['Archer/Archer_Shoot', 8] } },
   monk:    { fw: 192, frames: 11, files: { idle: ['Monk/Idle', 6], walk: ['Monk/Run', 4], attack: ['Monk/Heal', 11] } },
   lancer:  { fw: 320, frames: 12, files: { idle: ['Lancer/Lancer_Idle', 12], walk: ['Lancer/Lancer_Run', 6], attack: ['Lancer/Lancer_Right_Attack', 3] } },
-  pawn:    { fw: 192, frames: 8, files: { idle: ['Pawn/Pawn_Idle', 8], walk: ['Pawn/Pawn_Run', 6], attack: ['Pawn/Pawn_Interact Axe', 6], mine: ['Pawn/Pawn_Interact Pickaxe', 6] } },
+  // Pawn gathers with the matching tool (axe=wood, pickaxe=gold, knife=sheep)
+  // and hauls with the matching load (Run Wood/Meat/Gold).
+  pawn:    { fw: 192, frames: 8, files: {
+    idle: ['Pawn/Pawn_Idle', 8], walk: ['Pawn/Pawn_Run', 6],
+    attack: ['Pawn/Pawn_Interact Axe', 6], mine: ['Pawn/Pawn_Interact Pickaxe', 6],
+    butcher: ['Pawn/Pawn_Interact Knife', 4],
+    carrywood: ['Pawn/Pawn_Run Wood', 6], carrymeat: ['Pawn/Pawn_Run Meat', 6], carrygold: ['Pawn/Pawn_Run Gold', 6],
+  } },
 };
 
 const troopSheets: SheetDef[] = [];
@@ -65,6 +72,7 @@ export const SHEETS: SheetDef[] = [
   { key: 'tree3', url: `${A2}/Trees/Tree3.png`, frameWidth: 192, frameHeight: 192 },
   { key: 'tree4', url: `${A2}/Trees/Tree4.png`, frameWidth: 192, frameHeight: 192 },
   { key: 'sheep2', url: `${A2}/Sheep/Sheep_Idle.png`, frameWidth: 128, frameHeight: 128 },
+  { key: 'sheep2move', url: `${A2}/Sheep/Sheep_Move.png`, frameWidth: 128, frameHeight: 128 },
   { key: 'foam', url: `${A}/Terrain/Water/Foam/Foam.png`, frameWidth: 192, frameHeight: 192 },
   { key: 'rocks1', url: `${A}/Terrain/Water/Rocks/Rocks_01.png`, frameWidth: 128, frameHeight: 128 },
   { key: 'rocks2', url: `${A}/Terrain/Water/Rocks/Rocks_02.png`, frameWidth: 128, frameHeight: 128 },
@@ -150,7 +158,9 @@ function rowAnim(scene: Phaser.Scene, key: string, sheet: string, row: number, c
   });
 }
 
-const STATE_FR: Record<UnitState, number> = { idle: 8, walk: 12, attack: 12, mine: 12 };
+const STATE_FR: Record<UnitState, number> = {
+  idle: 8, walk: 12, attack: 12, mine: 12, butcher: 12, carrywood: 12, carrymeat: 12, carrygold: 12,
+};
 
 export function createAnims(scene: Phaser.Scene): void {
   // Remastered units: one anim per (colour, class, state), each from its own sheet.
@@ -179,6 +189,7 @@ export function createAnims(scene: Phaser.Scene): void {
   // Remastered trees (8-frame sway) + sheep idle (6 frames)
   for (let i = 1; i <= 4; i++) rowAnim(scene, `tree${i}_anim`, `tree${i}`, 0, 8, 8, 6);
   rowAnim(scene, 'sheep2_anim', 'sheep2', 0, 6, 6, 7);
+  rowAnim(scene, 'sheep2_move', 'sheep2move', 0, 4, 4, 8);
   rowAnim(scene, 'fire_anim', 'fire', 0, 7, 7, 10);
   rowAnim(scene, 'explosion_anim', 'explosion', 0, 9, 9, 14, 0);
   rowAnim(scene, 'dead_anim', 'dead', 0, 7, 7, 10, 0);

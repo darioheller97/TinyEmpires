@@ -459,8 +459,12 @@ export class GameRoom extends Room<GameState> {
       if (unit.carrying >= VILLAGER_CARRY_CAP || (unit.carrying > 0 && !this.hasGatherTarget(unit, home))) {
         unit.status = 'marching';
         if (!home) return;
-        const dh = Math.hypot(home.x - unit.x, home.y - unit.y);
-        if (dh > 44) { this.stepToward(unit, home.x, home.y + 50, vSpeed); return; }
+        // Aim for the city doorstep and measure distance to that same point, so
+        // the villager actually reaches the deposit threshold (don't compare to
+        // the city centre while walking to a point 50px below it).
+        const dropX = home.x, dropY = home.y + 40;
+        const dh = Math.hypot(dropX - unit.x, dropY - unit.y);
+        if (dh > 26) { this.stepToward(unit, dropX, dropY, vSpeed); return; }
         const rate = HARVEST_RATE[unit.resourceType as ResourceType];
         if (rate) {
           player.wood += rate.wood * unit.carrying / 3;

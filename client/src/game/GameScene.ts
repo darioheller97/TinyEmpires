@@ -438,6 +438,7 @@ export default class GameScene extends Phaser.Scene {
       const s = this.add.sprite(0, 0, 'sheep2').setScale(0.7);
       s.play({ key: 'sheep2_anim', startFrame: (r.x + r.y) % 6 });
       container.add(s);
+      this.wanderSheep(s);
     } else {
       // Gold deposit: a cluster of gemstones on the ground
       const g = (n: number) => `gem${1 + ((r.x * 3 + r.y * 5 + n) % 6)}`;
@@ -453,6 +454,24 @@ export default class GameScene extends Phaser.Scene {
     const entry = { gfx: container, data: { id: r.id, type: r.type, x: r.x, y: r.y, amount: r.amount, maxAmount: r.maxAmount } };
     container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('resource', r.id, names[r.type] || r.type, entry.data); });
     this.resourceGfx.set(r.id, entry);
+  }
+
+  // Sheep graze: idle, then amble a few px to a new spot with the walk anim,
+  // facing the way they go. Callbacks bail once the sprite is destroyed.
+  private wanderSheep(s: Phaser.GameObjects.Sprite): void {
+    const idle = () => {
+      if (!s.active) return;
+      s.play({ key: 'sheep2_anim', startFrame: 0 });
+      this.time.delayedCall(1400 + Math.random() * 3200, roam);
+    };
+    const roam = () => {
+      if (!s.active) return;
+      const tx = (Math.random() - 0.5) * 46, ty = (Math.random() - 0.5) * 26;
+      s.setFlipX(tx < s.x);
+      s.play('sheep2_move');
+      this.tweens.add({ targets: s, x: tx, y: ty, duration: 1100 + Math.random() * 900, ease: 'Sine.inOut', onComplete: idle });
+    };
+    this.time.delayedCall(Math.random() * 2500, roam);
   }
 
   // Drifting cloud blanket that hides the never-explored (state 0) regions.
@@ -588,9 +607,15 @@ export default class GameScene extends Phaser.Scene {
     const existing = this.unitGfx.get(unit.id);
     let desiredAnim = unit.status === 'fighting' || unit.status === 'sieging'
       ? 'attack' : unit.status === 'defending' ? 'idle' : 'walk';
-    // Villagers at work: pickaxe for gold, axe (the 'attack' clip) for wood/sheep
-    if (unit.type === 'villager' && desiredAnim === 'attack' && unit.resourceType === 'gold') {
-      desiredAnim = 'mine';
+    // Villagers: tool matches the resource (pickaxe=gold, knife=sheep, axe=wood)
+    // while working; while hauling home they carry the matching load.
+    if (unit.type === 'villager') {
+      const res = unit.resourceType; // 'tree' | 'sheep' | 'gold'
+      if (unit.carrying > 0 && desiredAnim === 'walk') {
+        desiredAnim = res === 'gold' ? 'carrygold' : res === 'sheep' ? 'carrymeat' : 'carrywood';
+      } else if (desiredAnim === 'attack') {
+        desiredAnim = res === 'gold' ? 'mine' : res === 'sheep' ? 'butcher' : 'attack';
+      }
     }
 
     if (existing) {
