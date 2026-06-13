@@ -91,6 +91,11 @@ export const IMAGES: { key: string; url: string }[] = [
   { key: 'bar_base', url: `${A2}/UI/bar_base.png` },
   { key: 'bar_fill', url: `${A2}/UI/bar_fill.png` },
   { key: 'icon_arrow', url: `${A2}/UI/icon_arrow.png` },
+  // Selection-marker corner brackets (pack pointers): 03 TL, 04 TR, 05 BL, 06 BR.
+  { key: 'sel_tl', url: `${A}/UI/Pointers/03.png` },
+  { key: 'sel_tr', url: `${A}/UI/Pointers/04.png` },
+  { key: 'sel_bl', url: `${A}/UI/Pointers/05.png` },
+  { key: 'sel_br', url: `${A}/UI/Pointers/06.png` },
   { key: 'rock1', url: `${A2}/Rocks/Rock1.png` },
   { key: 'rock2', url: `${A2}/Rocks/Rock2.png` },
   { key: 'rock3', url: `${A2}/Rocks/Rock3.png` },

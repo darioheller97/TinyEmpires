@@ -137,7 +137,7 @@ export function generateMap(seed: number): GeneratedMap {
   // ── Intersections only where segments actually cross (rare) ──
   const intersections: GenNode[] = [];
   let crossNamePool = [...CROSS_NAMES];
-  for (let guard = 0; guard < 3; guard++) {
+  for (let guard = 0; guard < 24; guard++) {
     let found = false;
     outer:
     for (let i = 0; i < segments.length; i++) {

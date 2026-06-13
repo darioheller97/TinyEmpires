@@ -72,6 +72,7 @@ export default class GameScene extends Phaser.Scene {
   private cityHealthBars: Map<string, Phaser.GameObjects.Container> = new Map();
   private lairHealthBars: Map<string, Phaser.GameObjects.Container> = new Map();
   private selectionRing: Phaser.GameObjects.Graphics | null = null;
+  private selMarker: Phaser.GameObjects.Container | null = null;
   private glowTarget: Phaser.GameObjects.Container | null = null;
   private glowTween: Phaser.Tweens.Tween | null = null;
   private towerPlace: { cityId: string; cx: number; cy: number; radius: number; ghost: Phaser.GameObjects.Container; tower: Phaser.GameObjects.Image; ring: Phaser.GameObjects.Graphics; highlight: Phaser.GameObjects.Graphics } | null = null;
@@ -260,9 +261,9 @@ export default class GameScene extends Phaser.Scene {
     // A clickable crossway signpost. The arrow points down the road the
     // player has routed troops along (faded & upward when none is set);
     // rotate it with R or the bottom-right control.
-    const plate = this.add.circle(0, 0, 17, 0xb8945e, 0.95);
-    plate.setStrokeStyle(3, 0x6b4f2e, 1);
-    const arrow = this.add.image(0, 0, 'icon_arrow').setScale(0.42).setOrigin(0.5);
+    const plate = this.add.circle(0, 0, 21, 0xf4e4c1, 0.97);
+    plate.setStrokeStyle(4, 0x6b4f2e, 1);
+    const arrow = this.add.image(0, 0, 'icon_arrow').setScale(0.5).setOrigin(0.5);
     const label = this.add.text(0, -32, node.name, {
       fontSize: '11px', color: '#ffd700', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 3,
@@ -290,7 +291,7 @@ export default class GameScene extends Phaser.Scene {
       arrow.setAlpha(1).clearTint();
     } else {
       arrow.setRotation(Math.PI / 2); // upward (left-pointing art + PI/2)
-      arrow.setAlpha(0.4);
+      arrow.setAlpha(0.7);
     }
   }
 
@@ -997,13 +998,37 @@ export default class GameScene extends Phaser.Scene {
     this.glowTarget = null;
   }
 
+  // Frame the selected object with the pack's four corner brackets, sized to
+  // the object. Replaces the old yellow ring. half = distance from centre to
+  // each corner. A gentle pulse draws the eye without being noisy.
+  private showSelMarker(x: number, y: number, half: number): void {
+    this.clearSelMarker();
+    const m = this.add.container(x, y).setDepth(41);
+    const s = 0.6;
+    const corners: [string, number, number][] = [
+      ['sel_tl', -half, -half], ['sel_tr', half, -half],
+      ['sel_bl', -half, half], ['sel_br', half, half],
+    ];
+    corners.forEach(([key, dx, dy]) => m.add(this.add.image(dx, dy, key).setScale(s)));
+    this.selMarker = m;
+    this.tweens.add({ targets: m, scale: { from: 1.06, to: 1 }, duration: 260, ease: 'Back.out' });
+  }
+
+  private clearSelMarker(): void {
+    if (this.selMarker) { this.selMarker.destroy(); this.selMarker = null; }
+  }
+
   private redrawSelectionRing(): void {
     if (!this.selectionRing) return;
     this.selectionRing.clear();
     this.clearGlow();
+    this.clearSelMarker();
     const { type, id, data } = this.selection;
     if (!data) return;
     this.selectionRing.lineStyle(2, 0xffff00, 0.9);
+    // Corner-bracket marker sized to the kind of thing selected.
+    const half = type === 'city' ? 80 : type === 'building' ? 48 : type === 'intersection' ? 30 : 36;
+    this.showSelMarker(data.x, data.y, half);
     if (type === 'city') {
       // Influence zone as terrain tiles (land cells within radius)
       if (this.terrainInfo) {
@@ -1023,20 +1048,18 @@ export default class GameScene extends Phaser.Scene {
           }
         }
       }
-      this.setGlow(this.cityGfx.get(id)?.gfx); // glow the fort, no ring
+      this.setGlow(this.cityGfx.get(id)?.gfx); // influence tiles + corner marker
     } else if (type === 'building') {
-      this.setGlow(this.buildingGfx.get(id)?.gfx); // glow the building, no ring
-    } else if (type === 'resource') {
-      this.selectionRing.strokeCircle(data.x, data.y, 30);
-    } else if (type === 'intersection') {
-      this.selectionRing.strokeCircle(data.x, data.y, 24);
+      this.setGlow(this.buildingGfx.get(id)?.gfx); // glow + corner marker
     }
+    // resource / intersection: the corner marker alone frames them.
   }
 
   private clearSelection(): void {
     this.hideRadialMenu();
     this.selection = { type: 'none', id: '', name: '' };
     if (this.selectionRing) this.selectionRing.clear();
+    this.clearSelMarker();
     this.clearGlow();
     const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void);
     if (onSelection) onSelection({ ...this.selection });
