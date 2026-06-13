@@ -206,10 +206,22 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   const southCoast = (r: number, c: number) => isLand(r, c) && grid[r][c] !== SAND && !isLand(r + 1, c);
   const platDrop = (r: number, c: number) => isElev(r, c) && isLand(r + 1, c) && !isElev(r + 1, c) && !isSand(r + 1, c);
   const cliffHere = (r: number, c: number) => southCoast(r, c) || platDrop(r, c);
-  const cliffPart = (r: number, c: number, edge: (r: number, c: number) => boolean): number => {
-    if (!edge(r, c - 1)) return 0;   // left end
-    if (!edge(r, c + 1)) return 3;   // right end
-    return (c & 1) ? 1 : 2;          // middle (alternate for variety)
+  // Is the side cell (sr,sc) a tier *below* the cliff cap at (r,c)? For a
+  // plateau the cap is ELEV (lower = non-elev); for a coast it's sea-level land
+  // (lower = water). Used to decide whether a run-end should round off.
+  const tierLower = (r: number, c: number, sr: number, sc: number) =>
+    isElev(r, c) ? !isElev(sr, sc) : !isLand(sr, sc);
+  // Frames for a cliff cell: [grass cap (base pass), rocky face (face pass)].
+  // A run-end whose side drops to lower ground rounds off with the pack's
+  // diagonal corner pieces (grass cascades down: 36/45 left, 39/48 right) so
+  // stepped coastlines read as continuous cliffs instead of cut-off blocks.
+  const cliffFrames = (r: number, c: number): [number, number] => {
+    const le = !cliffHere(r, c - 1), re = !cliffHere(r, c + 1);
+    if (le && !re && tierLower(r, c, r, c - 1)) return [36, 45];
+    if (re && !le && tierLower(r, c, r, c + 1)) return [39, 48];
+    const cap = le ? CAP[0] : (re ? CAP[3] : CAP[1]);
+    const rock = le ? CLIFF_UP[0] : (re ? CLIFF_UP[3] : (c & 1 ? CLIFF_UP[1] : CLIFF_UP[2]));
+    return [cap, rock];
   };
 
   // One tiled water background instead of thousands of per-cell images
@@ -222,7 +234,7 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
       // Cliff caps get the grass-lip edge tile so the grass visibly overhangs
       // the rocky face; everything else autotiles against its own kind.
       const gFrame = cliffHere(r, c)
-        ? CAP[cliffPart(r, c, cliffHere)]
+        ? cliffFrames(r, c)[0]
         : autotileFrame('grass', isLand(r - 1, c), isLand(r + 1, c), isLand(r, c + 1), isLand(r, c - 1));
       scene.add.image(x, y, sheet, gFrame).setOrigin(0).setDepth(grid[r][c] === ELEV ? 6 : 2);
       if (grid[r][c] === SAND) {
@@ -243,8 +255,7 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
     for (let c = 0; c < cols; c++) {
       if (!cliffHere(r, c)) continue;
       const x = c * TILE;
-      const i = cliffPart(r, c, cliffHere);
-      scene.add.image(x, (r + 1) * TILE, 'grass1', CLIFF_UP[i]).setOrigin(0).setDepth(7 + r * 0.02);
+      scene.add.image(x, (r + 1) * TILE, 'grass1', cliffFrames(r, c)[1]).setOrigin(0).setDepth(7 + r * 0.02);
       // Soft shadow at the foot of the cliff (above the lower ground/water, but
       // below the rocky face), adding depth where the cliff meets the ground.
       scene.add.image(x + TILE / 2, (r + 2) * TILE, 'shadow').setOrigin(0.5, 0.4)

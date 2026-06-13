@@ -116,23 +116,48 @@ export default class GameScene extends Phaser.Scene {
     this.time.addEvent({ delay: 700, loop: true, callback: () => this.tickArcherFx() });
   }
 
-  update(): void {
-    // Road units hop tile-to-tile on the beat; villagers stroll smoothly
+  update(time: number): void {
     this.unitGfx.forEach(u => {
       const pos = u.container.getData('worldPos') as { x: number; y: number } | undefined;
       if (!pos) return;
-      const villager = u.container.getData('isVillager') === true;
-      let dx = pos.x - u.container.x;
-      let dy = pos.y - u.container.y;
-      if (Math.abs(dx) > 0.8) u.sprite.setFlipX(dx < 0);
-      // Road units take diagonals as a staircase: sideways first, then up/down
-      if (!villager && Math.abs(dx) > 3 && Math.abs(dy) > 3) dy = 0;
-      const lerp = villager ? 0.25 : 0.45;
-      u.container.x += dx * lerp;
-      u.container.y += dy * lerp;
-      const dist = Math.hypot(dx, dy);
-      u.sprite.y = !villager && dist > 4 ? -Math.min(8, dist * 0.22) : 0;
-      u.container.setDepth(DEPTH_ENTITY + u.container.y * 0.01);
+      const c = u.container;
+
+      // Villagers stroll smoothly toward their free-roam target.
+      if (c.getData('isVillager') === true) {
+        const dx = pos.x - c.x, dy = pos.y - c.y;
+        if (Math.abs(dx) > 0.8) u.sprite.setFlipX(dx < 0);
+        c.x += dx * 0.25; c.y += dy * 0.25;
+        u.sprite.y = 0;
+        c.setDepth(DEPTH_ENTITY + c.y * 0.01);
+        return;
+      }
+
+      // Road units: the server snaps them tile-to-tile each beat. Instead of
+      // chasing the new tile with a quick lerp (which reads as teleporting),
+      // glide across the whole gap over the beat and add a little sine hop.
+      const hopTo = c.getData('hopTo') as { x: number; y: number } | undefined;
+      if (!hopTo || Math.hypot(hopTo.x - pos.x, hopTo.y - pos.y) > 2) {
+        // New beat target. Calibrate the hop duration from the real beat interval.
+        const last = c.getData('beatAt') as number | undefined;
+        const dur = last !== undefined ? Phaser.Math.Clamp(time - last, 220, 900) : 520;
+        c.setData('hopFrom', { x: c.x, y: c.y });
+        c.setData('hopTo', pos);
+        c.setData('hopStart', time);
+        c.setData('hopDur', dur);
+        c.setData('beatAt', time);
+        const ddx = pos.x - c.x;
+        if (Math.abs(ddx) > 0.8) u.sprite.setFlipX(ddx < 0);
+      }
+      const from = c.getData('hopFrom') as { x: number; y: number };
+      const to = c.getData('hopTo') as { x: number; y: number };
+      const dur = c.getData('hopDur') as number;
+      const p = Phaser.Math.Clamp((time - (c.getData('hopStart') as number)) / dur, 0, 1);
+      const pe = p * p * (3 - 2 * p); // smoothstep ease so steps don't look mechanical
+      c.x = from.x + (to.x - from.x) * pe;
+      c.y = from.y + (to.y - from.y) * pe;
+      const moving = Math.hypot(to.x - from.x, to.y - from.y) > 4;
+      u.sprite.y = moving ? -8 * Math.sin(p * Math.PI) : 0;
+      c.setDepth(DEPTH_ENTITY + c.y * 0.01);
     });
   }
 
