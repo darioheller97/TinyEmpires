@@ -7,7 +7,7 @@ import BuildMenu, { BuildOption } from './ui/BuildMenu';
 import InfoPanel from './ui/InfoPanel';
 import SpawnPanel from './ui/SpawnPanel';
 import TechTreeModal, { TechOption } from './ui/TechTreeModal';
-import { BUTTON as SKIN_BUTTON } from './ui/skin';
+import { BUTTON as SKIN_BUTTON, PANEL as SKIN_PANEL } from './ui/skin';
 import { playSfx, toggleMute, isAudioMuted } from './game/audio';
 
 // Styles
@@ -28,6 +28,9 @@ const BOTTOM_MIDDLE: React.CSSProperties = {
 };
 const BOTTOM_LEFT: React.CSSProperties = {
   position: 'absolute', bottom: 16, left: 16, pointerEvents: 'auto',
+};
+const BOTTOM_RIGHT: React.CSSProperties = {
+  position: 'absolute', bottom: 16, right: 16, pointerEvents: 'auto',
 };
 
 const TECH_BTN: React.CSSProperties = {
@@ -111,6 +114,7 @@ export default function App() {
     client()?.researchTech(techId); playSfx('build_place', { volume: 0.5 });
   }, []);
   const handleToggleMute = useCallback(() => setMuted(toggleMute()), []);
+  const handleRotateRoute = useCallback(() => { sceneRef.current?.rotateIntersectionRoute(); }, []);
   const handleNavigate = useCallback((x: number, y: number) => {
     sceneRef.current?.centerCamera(x, y);
   }, []);
@@ -177,6 +181,19 @@ export default function App() {
         <div style={BOTTOM_LEFT}>
           <InfoPanel selection={selection} />
         </div>
+        {selection.type === 'intersection' && (
+          <div style={BOTTOM_RIGHT}>
+            <div style={{ ...SKIN_PANEL, width: 168, padding: '2px 8px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+              <div style={{ fontSize: 13 }}>Unit Routing</div>
+              <button style={{ ...ICON_BTN, width: 52, height: 52 }} onClick={handleRotateRoute} title="Rotate route (R)">
+                <img src="/assets2/UI/icon_arrow.png" alt="route" width={52} height={52} style={{ imageRendering: 'pixelated', display: 'block' }} />
+              </button>
+              <div style={{ fontSize: 11, textAlign: 'center', lineHeight: 1.25 }}>
+                Click or press <b>R</b> to aim troops down a road. No arrow = units spread out.
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <TechTreeModal

@@ -84,6 +84,7 @@ export default class GameScene extends Phaser.Scene {
 
   private radialMenu: Phaser.GameObjects.Container | null = null;
   private myRoutes: Map<string, string> = new Map();
+  private intersectionArrows: Map<string, Phaser.GameObjects.Image> = new Map();
   private dragMoved = false;
 
   // Resource nodes (server-driven trees/sheep/gold)
@@ -236,22 +237,66 @@ export default class GameScene extends Phaser.Scene {
   // ── Intersections + routing ───────────────────────────────
   private drawIntersection(node: NodeInfo): void {
     const container = this.add.container(node.x, node.y);
-    // A clickable crossway signpost — tap it to choose which way troops turn.
+    // A clickable crossway signpost. The arrow points down the road the
+    // player has routed troops along (faded & upward when none is set);
+    // rotate it with R or the bottom-right control.
     const plate = this.add.circle(0, 0, 17, 0xb8945e, 0.95);
     plate.setStrokeStyle(3, 0x6b4f2e, 1);
-    const sign = this.add.text(0, 0, '🔀', { fontSize: '20px' }).setOrigin(0.5);
+    const arrow = this.add.image(0, 0, 'icon_arrow').setScale(0.42).setOrigin(0.5);
     const label = this.add.text(0, -32, node.name, {
       fontSize: '11px', color: '#ffd700', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5);
-    container.add([plate, sign, label]);
+    container.add([plate, arrow, label]);
     container.setDepth(DEPTH_ENTITY + node.y * 0.01);
     container.setInteractive(new Phaser.Geom.Circle(0, 0, 24), Phaser.Geom.Circle.Contains);
     container.on('pointerup', () => { if (!this.dragMoved) this.onIntersectionClick(node); });
     container.on('pointerover', () => container.setScale(1.18));
     container.on('pointerout', () => container.setScale(1));
-    // A gentle idle bob hints that the sign is interactive.
-    this.tweens.add({ targets: sign, y: { from: 0, to: -3 }, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    this.intersectionArrows.set(node.id, arrow);
+    this.applyRouteArrow(node.id);
+  }
+
+  // Point an intersection's signpost arrow down the routed road (bright), or
+  // fade it pointing up when no route is set. Art points left by default.
+  private applyRouteArrow(nodeId: string): void {
+    const arrow = this.intersectionArrows.get(nodeId);
+    const node = this.nodes.get(nodeId);
+    if (!arrow || !node) return;
+    const roadId = this.myRoutes.get(nodeId);
+    const dest = roadId ? this.nodes.get(this.roadsById.get(roadId)?.toId ?? '') : undefined;
+    if (dest) {
+      arrow.setRotation(Math.atan2(dest.y - node.y, dest.x - node.x) + Math.PI);
+      arrow.setAlpha(1).clearTint();
+    } else {
+      arrow.setRotation(Math.PI / 2); // upward (left-pointing art + PI/2)
+      arrow.setAlpha(0.4);
+    }
+  }
+
+  // Cycle the selected crossroad's route through its exits (then "off"),
+  // rotating the signpost arrow. Bound to R and the bottom-right control.
+  rotateIntersectionRoute(): void {
+    if (this.selection.type !== 'intersection') return;
+    const nodeId = this.selection.id;
+    const node = this.nodes.get(nodeId);
+    if (!node) return;
+    const outgoing = [...this.roadsById.values()].filter(r => r.fromId === nodeId);
+    if (outgoing.length === 0) return;
+    outgoing.sort((a, b) => {
+      const da = this.nodes.get(a.toId), db = this.nodes.get(b.toId);
+      const aa = da ? Math.atan2(da.y - node.y, da.x - node.x) : 0;
+      const ab = db ? Math.atan2(db.y - node.y, db.x - node.x) : 0;
+      return aa - ab;
+    });
+    const ids = [...outgoing.map(r => r.id), '']; // '' = clear the route
+    const idx = ids.indexOf(this.myRoutes.get(nodeId) ?? '');
+    const nextId = ids[(idx + 1) % ids.length];
+    if (nextId) this.myRoutes.set(nodeId, nextId); else this.myRoutes.delete(nodeId);
+    this.client?.setRoute(nodeId, nextId);
+    this.applyRouteArrow(nodeId);
+    this.drawRouteArrows();
+    playSfx('ui_click', { volume: 0.35 });
   }
 
   private onIntersectionClick(node: NodeInfo): void {
@@ -291,6 +336,7 @@ export default class GameScene extends Phaser.Scene {
       btn.on('pointerup', () => {
         this.client?.setRoute(node.id, road.id);
         this.myRoutes.set(node.id, road.id);
+        this.applyRouteArrow(node.id);
         this.drawRouteArrows();
         this.hideRadialMenu();
       });
@@ -305,6 +351,7 @@ export default class GameScene extends Phaser.Scene {
     clearBtn.on('pointerup', () => {
       this.client?.setRoute(node.id, '');
       this.myRoutes.delete(node.id);
+      this.applyRouteArrow(node.id);
       this.drawRouteArrows();
       this.hideRadialMenu();
     });
@@ -990,6 +1037,8 @@ export default class GameScene extends Phaser.Scene {
     });
     this.input.on('pointerdown', () => { this.dragMoved = false; });
     this.input.keyboard?.on('keydown-ESC', () => this.cancelTowerPlacement());
+    // R rotates the selected crossroad's route arrow to the next exit.
+    this.input.keyboard?.on('keydown-R', () => this.rotateIntersectionRoute());
     // Right-click sets a barracks' rally road: with a barracks selected, click the
     // outgoing road you want fresh troops to march down.
     this.input.mouse?.disableContextMenu();

@@ -90,6 +90,7 @@ export const IMAGES: { key: string; url: string }[] = [
   // In-world health bars (the React HUD uses CSS for its copies)
   { key: 'bar_base', url: `${A2}/UI/bar_base.png` },
   { key: 'bar_fill', url: `${A2}/UI/bar_fill.png` },
+  { key: 'icon_arrow', url: `${A2}/UI/icon_arrow.png` },
   { key: 'rock1', url: `${A2}/Rocks/Rock1.png` },
   { key: 'rock2', url: `${A2}/Rocks/Rock2.png` },
   { key: 'rock3', url: `${A2}/Rocks/Rock3.png` },
