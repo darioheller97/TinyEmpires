@@ -183,14 +183,36 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   const isSand = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] === SAND;
   const isElev = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] === ELEV;
 
+  // ── Cliff topology (south-facing drops) ──
+  // A cell is a cliff "cap" when it has a one-tile rocky drop on its south edge:
+  //  • coast  — land sitting above water
+  //  • platDrop — elevated ground sitting above lower grass
+  // The cap tile uses the elevated-grass bottom edge (the grass lip overhanging
+  // the cliff): LIP[0] left corner, LIP[1/2] middle, LIP[3] right corner —
+  // chosen by where the cliff run ends. The rocky face + a foot shadow render
+  // below it in a later pass.
+  const LIP = [32, 33, 34, 35];
+  const southCoast = (r: number, c: number) => isLand(r, c) && !isLand(r + 1, c);
+  const platDrop = (r: number, c: number) => isElev(r, c) && isLand(r + 1, c) && !isElev(r + 1, c);
+  const cliffHere = (r: number, c: number) => southCoast(r, c) || platDrop(r, c);
+  const cliffPart = (r: number, c: number, edge: (r: number, c: number) => boolean): number => {
+    if (!edge(r, c - 1)) return 0;   // left end
+    if (!edge(r, c + 1)) return 3;   // right end
+    return (c & 1) ? 1 : 2;          // middle (alternate for variety)
+  };
+
   // One tiled water background instead of thousands of per-cell images
   scene.add.tileSprite(0, 0, cols * TILE, rows * TILE, 'water_bg').setOrigin(0).setDepth(0);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       if (grid[r][c] === WATER) continue;
       const x = c * TILE, y = r * TILE;
-      const gFrame = autotileFrame('grass', isLand(r - 1, c), isLand(r + 1, c), isLand(r, c + 1), isLand(r, c - 1));
       const sheet = grid[r][c] === ELEV ? PLAT[((plateau[r][c] % 3) + 3) % 3] : flatSheet(c, r);
+      // Cliff caps get the grass-lip edge tile so the grass visibly overhangs
+      // the rocky face; everything else autotiles against its own kind.
+      const gFrame = cliffHere(r, c)
+        ? LIP[cliffPart(r, c, cliffHere)]
+        : autotileFrame('grass', isLand(r - 1, c), isLand(r + 1, c), isLand(r, c + 1), isLand(r, c - 1));
       scene.add.image(x, y, sheet, gFrame).setOrigin(0).setDepth(grid[r][c] === ELEV ? 6 : 2);
       if (grid[r][c] === SAND) {
         const sFrame = autotileFrame('sand', isSand(r - 1, c), isSand(r + 1, c), isSand(r, c + 1), isSand(r, c - 1));
@@ -199,37 +221,29 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
     }
   }
 
-  // ── Cliffs (south-facing only, like the Tiny Swords look) ──
-  // A single rocky tile per drop — CLIFF_UP (41–44) already carries the grass
-  // lip on top, so one tile reads as a full cliff (stacking two looked like
-  // double pillars). Higher ground is terraced via separate plateau discs,
-  // each its own one-tile step with grass above and below.
-  //  • coast: land dropping to water on its south edge → 1-tile cliff + a foam
-  //    ripple lapping its foot.
-  //  • plateau: an elevated cell dropping to lower grass → 1-tile cliff face.
-  const cliffTop = new Set<number>(); // land cells fronted by a cliff (skip foam)
-  const cliffPart = (r: number, c: number, edge: (r: number, c: number) => boolean): number => {
-    if (!edge(r, c - 1)) return 0;   // left end
-    if (!edge(r, c + 1)) return 3;   // right end
-    return (c & 1) ? 1 : 2;          // middle (alternate for variety)
-  };
-  const southCoast = (r: number, c: number) => isLand(r, c) && !isLand(r + 1, c);
-  const platDrop = (r: number, c: number) => isElev(r, c) && isLand(r + 1, c) && !isElev(r + 1, c);
+  // ── Cliff faces + foot shadow ──
+  // The cap tile above already shows the grass lip (rendered in the base pass);
+  // here we drop the single rocky face (CLIFF_UP 41–44) below it, lay a soft
+  // shadow at its foot to ground the cliff, and — for coastal drops — break a
+  // foam ripple against it. Higher ground is terraced via separate plateau
+  // discs, each its own one-tile step with grass above and below.
+  const cliffTop = new Set<number>(); // cap cells (skip ambient foam over them)
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
+      if (!cliffHere(r, c)) continue;
       const x = c * TILE;
+      const i = cliffPart(r, c, cliffHere);
+      scene.add.image(x, (r + 1) * TILE, 'grass1', CLIFF_UP[i]).setOrigin(0).setDepth(7 + r * 0.02);
+      // Soft shadow at the foot of the cliff (above the lower ground/water, but
+      // below the rocky face), adding depth where the cliff meets the ground.
+      scene.add.image(x + TILE / 2, (r + 2) * TILE, 'shadow').setOrigin(0.5, 0.4)
+        .setScale(0.5, 0.34).setAlpha(0.4).setDepth(5);
       if (southCoast(r, c)) {
-        const i = cliffPart(r, c, southCoast);
-        scene.add.image(x, (r + 1) * TILE, 'grass1', CLIFF_UP[i]).setOrigin(0).setDepth(7 + r * 0.02);
         // water ripple breaking against the foot of the cliff
         scene.add.sprite(x + TILE / 2, (r + 2) * TILE, 'foam2').setDepth(1)
           .play({ key: 'foam2_anim', startFrame: Math.floor(rng() * 16) });
-        cliffTop.add(r * cols + c);
-      } else if (platDrop(r, c)) {
-        const i = cliffPart(r, c, platDrop);
-        scene.add.image(x, (r + 1) * TILE, 'grass1', CLIFF_UP[i]).setOrigin(0).setDepth(7 + r * 0.02);
-        cliffTop.add(r * cols + c);
       }
+      cliffTop.add(r * cols + c);
     }
   }
 
