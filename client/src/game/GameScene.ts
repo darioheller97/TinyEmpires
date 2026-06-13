@@ -325,28 +325,29 @@ export default class GameScene extends Phaser.Scene {
     influence.setVisible(false);
     // Unclaimed cities show an intact but greyed-out (neutral) fort, not a ruin.
     const castle = this.add.image(0, 0, `castle2_${city.ownerId ? factionOf(this.playerColors.get(city.ownerId)) : 'Blue'}`);
-    castle.setScale(0.5).setOrigin(0.5, 0.62).setTint(city.ownerId ? 0xffffff : 0x8f9aa6);
-    const fire = this.add.sprite(-30, -40, 'fire').setScale(0.8).setVisible(false);
+    castle.setScale(0.7).setOrigin(0.5, 0.62).setTint(city.ownerId ? 0xffffff : 0x8f9aa6);
+    const fire = this.add.sprite(-42, -56, 'fire').setScale(0.9).setVisible(false);
     fire.play('fire_anim');
-    const fire2 = this.add.sprite(34, -20, 'fire').setScale(0.6).setVisible(false);
+    const fire2 = this.add.sprite(48, -28, 'fire').setScale(0.7).setVisible(false);
     fire2.play('fire_anim');
-    const nameLabel = this.add.text(0, 64, city.name, {
+    const nameLabel = this.add.text(0, 86, city.name, {
       fontSize: '13px', color: '#ffffff', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5);
-    const levelLabel = this.add.text(0, -86, `Lv.${city.townHallLevel}`, {
+    const levelLabel = this.add.text(0, -118, `Lv.${city.townHallLevel}`, {
       fontSize: '11px', color: '#ffd700', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 2,
     }).setOrigin(0.5);
 
     // Two defending archers on the battlements (they do the fort's damage).
+    // Sized to match field units (0.62) and seated on the bigger towers.
     const acolor = city.ownerId ? factionOf(this.playerColors.get(city.ownerId)) : 'Blue';
-    const arL = this.add.sprite(-38, -38, `u_${acolor}_archer_idle`).setScale(0.42).setVisible(!!city.ownerId);
-    const arR = this.add.sprite(38, -38, `u_${acolor}_archer_idle`).setScale(0.42).setFlipX(true).setVisible(!!city.ownerId);
+    const arL = this.add.sprite(-54, -58, `u_${acolor}_archer_idle`).setScale(0.62).setVisible(!!city.ownerId);
+    const arR = this.add.sprite(54, -58, `u_${acolor}_archer_idle`).setScale(0.62).setFlipX(true).setVisible(!!city.ownerId);
     if (city.ownerId) { arL.play(`u_${acolor}_archer_idle`); arR.play(`u_${acolor}_archer_idle`); }
     container.add([influence, castle, fire, fire2, nameLabel, levelLabel, arL, arR]);
     container.setDepth(DEPTH_ENTITY + city.y * 0.01);
-    container.setInteractive(new Phaser.Geom.Rectangle(-80, -85, 160, 150), Phaser.Geom.Rectangle.Contains);
+    container.setInteractive(new Phaser.Geom.Rectangle(-108, -118, 216, 200), Phaser.Geom.Rectangle.Contains);
     const entry = { gfx: container, data: city };
     container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('city', city.id, city.name, entry.data); });
     this.cityGfx.set(city.id, entry);
@@ -372,7 +373,7 @@ export default class GameScene extends Phaser.Scene {
       const akey = `u_${acolor}_archer_idle`;
       if (data.ownerId && ar.anims.currentAnim?.key !== akey) ar.play(akey);
     });
-    this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 82, 92, data.health, data.maxHealth, true);
+    this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 104, 92, data.health, data.maxHealth, true);
   }
 
   private hashStr(s: string): number {
@@ -793,8 +794,8 @@ export default class GameScene extends Phaser.Scene {
       const color = factionOf(this.playerColors.get(e.data.ownerId));
       this.playShoot(e.gfx.getAt(6) as Phaser.GameObjects.Sprite, color);
       this.playShoot(e.gfx.getAt(7) as Phaser.GameObjects.Sprite, color);
-      this.fireArrow(e.data.x - 38, e.data.y - 38, target.x, target.y, color);
-      this.fireArrow(e.data.x + 38, e.data.y - 38, target.x, target.y, color);
+      this.fireArrow(e.data.x - 54, e.data.y - 58, target.x, target.y, color);
+      this.fireArrow(e.data.x + 54, e.data.y - 58, target.x, target.y, color);
     });
     // Defense towers: single archer on top.
     this.buildingGfx.forEach(e => {
