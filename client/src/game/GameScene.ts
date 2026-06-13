@@ -334,7 +334,12 @@ export default class GameScene extends Phaser.Scene {
       stroke: '#000', strokeThickness: 2,
     }).setOrigin(0.5);
 
-    container.add([influence, castle, fire, fire2, nameLabel, levelLabel]);
+    // Two defending archers on the battlements (they do the fort's damage).
+    const acolor = city.ownerId ? factionOf(this.playerColors.get(city.ownerId)) : 'Blue';
+    const arL = this.add.sprite(-30, -46, `u_${acolor}_archer_idle`).setScale(0.42).setVisible(!!city.ownerId);
+    const arR = this.add.sprite(30, -46, `u_${acolor}_archer_idle`).setScale(0.42).setFlipX(true).setVisible(!!city.ownerId);
+    if (city.ownerId) { arL.play(`u_${acolor}_archer_idle`); arR.play(`u_${acolor}_archer_idle`); }
+    container.add([influence, castle, fire, fire2, nameLabel, levelLabel, arL, arR]);
     container.setDepth(DEPTH_ENTITY + city.y * 0.01);
     container.setInteractive(new Phaser.Geom.Rectangle(-80, -85, 160, 150), Phaser.Geom.Rectangle.Contains);
     const entry = { gfx: container, data: city };
@@ -352,6 +357,15 @@ export default class GameScene extends Phaser.Scene {
     const burning = data.health < data.maxHealth * 0.7;
     (gfx.getAt(2) as Phaser.GameObjects.Sprite).setVisible(burning);
     (gfx.getAt(3) as Phaser.GameObjects.Sprite).setVisible(data.health < data.maxHealth * 0.4);
+    // Defending archers follow ownership/colour
+    const acolor = data.ownerId ? factionOf(this.playerColors.get(data.ownerId)) : 'Blue';
+    [6, 7].forEach(i => {
+      const ar = gfx.getAt(i) as Phaser.GameObjects.Sprite | undefined;
+      if (!ar) return;
+      ar.setVisible(!!data.ownerId);
+      const akey = `u_${acolor}_archer_idle`;
+      if (data.ownerId && ar.anims.currentAnim?.key !== akey) ar.play(akey);
+    });
     this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 82, 92, data.health, data.maxHealth, true);
   }
 
@@ -375,8 +389,11 @@ export default class GameScene extends Phaser.Scene {
       container.add(this.add.image(0, 0, `${variant}_${color}`).setScale(0.55).setOrigin(0.5, 0.72));
     } else if (b.type === 'barracks') {
       container.add(this.add.image(0, 0, `barracks2_${color}`).setScale(0.5).setOrigin(0.5, 0.7));
-    } else { // defense_tower
+    } else { // defense_tower — pack tower with an archer posted on top
       container.add(this.add.image(0, 0, `tower2_${color}`).setScale(0.5).setOrigin(0.5, 0.72));
+      const ar = this.add.sprite(0, -34, `u_${color}_archer_idle`).setScale(0.4);
+      ar.play(`u_${color}_archer_idle`);
+      container.add(ar);
     }
 
     container.setDepth(DEPTH_ENTITY + b.y * 0.01);

@@ -36,6 +36,8 @@ const VILLAGER_SEARCH_RADIUS = 1400;  // from home city
 const VILLAGER_CARRY_CAP = 9;         // units hauled before a villager returns home
 const SHEEP_REGEN_INTERVAL_TICKS = 30; // ~3s between sheep flock growth
 const SHEEP_REGEN_AMOUNT = 2;          // food units regrown per interval
+const ARCHER_DEF_RANGE = 280;          // how far tower/capital archers can shoot
+const ARCHER_DEF_DMG = 13;             // per archer shot (before armour)
 
 /**
  * Rasterize a road spline into a 4-connected sequence of 64px tiles.
@@ -341,6 +343,7 @@ export class GameRoom extends Room<GameState> {
     this.moveUnits();
     this.processCombat();
     this.processSieges();
+    this.processDefenseArchers();
     if (this.state.tick % HEAL_INTERVAL_TICKS === 0) this.processMonkHealing();
     if (this.state.tick % SHEEP_REGEN_INTERVAL_TICKS === 0) this.processSheepRegen();
     this.cleanupIdleGarrisons();
@@ -896,19 +899,61 @@ export class GameRoom extends Room<GameState> {
         this.conquerCity(city, lastAttackerOwner);
       }
     });
-    if (city.health <= 0) return;
+    // The fort itself deals no damage — its archers (processDefenseArchers) do,
+    // and they shoot besiegers (at the node, in range) and passers-by alike.
+  }
 
-    // Town hall + defense towers retaliate (focus the weakest besieger)
-    if (city.ownerId && this.state.tick % RETALIATE_INTERVAL_TICKS === 0) {
-      const hostiles = besiegers.filter(u => this.state.units.has(u.id) && u.ownerId !== city.ownerId);
-      if (hostiles.length === 0) return;
-      const towers = this.buildingsOf(city.id).filter(b => b.type === 'defense_tower').length;
-      const defense = city.townHallLevel * 6 + towers * 12;
-      const target = hostiles.reduce((lo, u) => (u.health < lo.health ? u : lo), hostiles[0]);
-      target.health = Math.max(0, target.health - defense);
-      if (target.health <= 0) {
-        if (!target.isPvE) this.refundPop(target.ownerId);
-        this.state.units.delete(target.id);
+  // World position of any unit: villagers carry x/y; parked units sit at their
+  // node; road units interpolate their road's spline at t.
+  private unitWorldPos(u: UnitNode): { x: number; y: number } {
+    if (u.type === 'villager') return { x: u.x, y: u.y };
+    if (u.atNodeId) {
+      const n = this.state.cities.get(u.atNodeId) || this.state.intersections.get(u.atNodeId) || this.state.lairs.get(u.atNodeId);
+      if (n) return { x: n.x, y: n.y };
+    }
+    const road = this.state.roads.get(u.roadId);
+    const pts = road?.splinePoints;
+    if (!pts || pts.length === 0) return { x: u.x, y: u.y };
+    const last = pts.length - 1;
+    const f = Math.max(0, Math.min(1, u.t)) * last;
+    const i = Math.floor(f), frac = f - i;
+    const a = pts[i], b = pts[Math.min(last, i + 1)];
+    if (!a || !b) return { x: u.x, y: u.y };
+    return { x: a.x + (b.x - a.x) * frac, y: a.y + (b.y - a.y) * frac };
+  }
+
+  // Tower & capital archers shoot the nearest enemies passing within range.
+  // The capital fort fields two archers; each defense tower fields one.
+  private processDefenseArchers(): void {
+    if (this.state.tick % RETALIATE_INTERVAL_TICKS !== 0) return;
+    this.state.cities.forEach(city => {
+      if (!city.ownerId || !this.state.players.has(city.ownerId)) return;
+      const owner = this.state.players.get(city.ownerId);
+      const dmg = ARCHER_DEF_DMG * (owner?.hasTech('dmg_archer') ? 1.25 : 1);
+      this.archersShoot(city.x, city.y, city.ownerId, 2, dmg);            // capital: 2 archers
+      this.buildingsOf(city.id).forEach(b => {
+        if (b.type === 'defense_tower') this.archersShoot(b.x, b.y, city.ownerId, 1, dmg); // tower: 1
+      });
+    });
+  }
+
+  private archersShoot(x: number, y: number, ownerId: string, shots: number, dmg: number): void {
+    const inRange: { u: UnitNode; d: number }[] = [];
+    this.state.units.forEach(u => {
+      if (u.ownerId === ownerId || u.type === 'villager' || u.health <= 0) return;
+      const p = this.unitWorldPos(u);
+      const d = Math.hypot(p.x - x, p.y - y);
+      if (d <= ARCHER_DEF_RANGE) inRange.push({ u, d });
+    });
+    if (inRange.length === 0) return;
+    inRange.sort((a, b) => a.d - b.d); // focus the closest threats
+    for (let s = 0; s < shots && s < inRange.length; s++) {
+      const t = inRange[s].u;
+      const armor = (TROOP_STATS[t.type]?.armor ?? 0) * 0.9; // archers have low penetration
+      t.health = Math.max(0, t.health - Math.max(1, Math.floor(dmg - armor)));
+      if (t.health <= 0) {
+        if (!t.isPvE) this.refundPop(t.ownerId);
+        this.state.units.delete(t.id);
       }
     }
   }
