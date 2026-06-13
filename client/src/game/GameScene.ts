@@ -111,6 +111,9 @@ export default class GameScene extends Phaser.Scene {
     this.routeArrowGfx = this.add.graphics().setDepth(30);
     this.setupCameraControls();
     this.connectToServer();
+    // Cosmetic combat tick: archers (capital, towers, field units) loose arrows
+    // at nearby enemies. Purely visual — the server owns the actual damage.
+    this.time.addEvent({ delay: 700, loop: true, callback: () => this.tickArcherFx() });
   }
 
   update(): void {
@@ -682,7 +685,7 @@ export default class GameScene extends Phaser.Scene {
       if (prevRatio !== undefined && ratio < prevRatio - 0.001) {
         // One battle cue at a time: long throttle + spatial falloff so it never
         // buzzes, goes quiet off to the side, and fades when zoomed out.
-        playSfx('sword_clash', { volume: 0.4, throttleMs: 650, x: existing.container.x, y: existing.container.y });
+        playSfx('sword_clash', { volume: 0.26, throttleMs: 650, x: existing.container.x, y: existing.container.y });
       }
       existing.container.setData('hpRatio', ratio);
       this.setBarRatio(existing.hpBar, ratio);
@@ -739,6 +742,81 @@ export default class GameScene extends Phaser.Scene {
     }
     u.container.destroy();
     this.unitGfx.delete(id);
+  }
+
+  // ── Archer combat FX (cosmetic) ───────────────────────────
+  // Find the closest visible enemy unit within `range` of a point.
+  private nearestEnemyNear(x: number, y: number, ownerId: string, range: number): { x: number; y: number } | null {
+    let best: { x: number; y: number } | null = null;
+    let bestD = range;
+    this.unitGfx.forEach(u => {
+      if (!u.container.visible) return;
+      if ((u.container.getData('ownerId') as string) === ownerId) return;
+      if (u.container.getData('isVillager') === true) return; // workers aren't targets
+      const d = Math.hypot(u.container.x - x, u.container.y - y);
+      if (d < bestD) { bestD = d; best = { x: u.container.x, y: u.container.y }; }
+    });
+    return best;
+  }
+
+  // Spawn an arrow that flies from the archer to the target and vanishes on hit.
+  private fireArrow(fromX: number, fromY: number, toX: number, toY: number, color: string): void {
+    const tex = this.textures.exists(`arrow_${color}`) ? `arrow_${color}` : 'arrow_Blue';
+    const arrow = this.add.image(fromX, fromY, tex)
+      .setScale(0.5)
+      .setRotation(Math.atan2(toY - fromY, toX - fromX))
+      .setDepth(DEPTH_ENTITY + Math.max(fromY, toY) * 0.01 + 1);
+    const dist = Math.hypot(toX - fromX, toY - fromY);
+    this.tweens.add({
+      targets: arrow, x: toX, y: toY,
+      duration: Math.max(140, dist * 1.4), ease: 'Linear',
+      onComplete: () => arrow.destroy(),
+    });
+  }
+
+  // Play an archer sprite's shoot animation once, then settle back to idle.
+  private playShoot(ar: Phaser.GameObjects.Sprite | undefined, color: string): void {
+    if (!ar) return;
+    const attackKey = `u_${color}_archer_attack`;
+    const idleKey = `u_${color}_archer_idle`;
+    if (!this.anims.exists(attackKey)) return;
+    ar.play(attackKey);
+    this.time.delayedCall(660, () => { if (ar.active) ar.play(idleKey); });
+  }
+
+  private tickArcherFx(): void {
+    // Capital forts: two battlement archers each volley the nearest foe.
+    this.cityGfx.forEach(e => {
+      if (!e.data.ownerId || !e.gfx.visible) return;
+      const target = this.nearestEnemyNear(e.data.x, e.data.y, e.data.ownerId, 300);
+      if (!target) return;
+      const color = factionOf(this.playerColors.get(e.data.ownerId));
+      this.playShoot(e.gfx.getAt(6) as Phaser.GameObjects.Sprite, color);
+      this.playShoot(e.gfx.getAt(7) as Phaser.GameObjects.Sprite, color);
+      this.fireArrow(e.data.x - 38, e.data.y - 38, target.x, target.y, color);
+      this.fireArrow(e.data.x + 38, e.data.y - 38, target.x, target.y, color);
+    });
+    // Defense towers: single archer on top.
+    this.buildingGfx.forEach(e => {
+      if (e.data.type !== 'defense_tower' || !e.gfx.visible) return;
+      const ownerId = this.cityGfx.get(e.data.cityId)?.data.ownerId;
+      if (!ownerId) return;
+      const target = this.nearestEnemyNear(e.data.x, e.data.y, ownerId, 280);
+      if (!target) return;
+      const color = factionOf(this.playerColors.get(ownerId));
+      this.playShoot(e.gfx.getAt(1) as Phaser.GameObjects.Sprite, color);
+      this.fireArrow(e.data.x, e.data.y - 34, target.x, target.y, color);
+    });
+    // Field archer units that are mid-attack already play the shoot anim — add
+    // the flying arrow so the strike reads as ranged.
+    this.unitGfx.forEach(u => {
+      if (!u.container.visible || !u.base.includes('_archer') || !u.anim.endsWith('_attack')) return;
+      const ownerId = u.container.getData('ownerId') as string;
+      const target = this.nearestEnemyNear(u.container.x, u.container.y, ownerId, 240);
+      if (!target) return;
+      const color = u.base.split('_')[1];
+      this.fireArrow(u.container.x, u.container.y - 12, target.x, target.y, color);
+    });
   }
 
   private getUnitWorldPos(unit: any): { x: number; y: number } | null {

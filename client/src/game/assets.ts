@@ -135,6 +135,10 @@ FACTION_COLORS.forEach(c => {
     { key: `house2c_${c}`, url: `${A2}/Buildings/${c}/House3.png` },
   );
 });
+// Archer arrow projectile (64×64), one tinted variant per unit colour.
+UNIT_COLORS.forEach(c => {
+  IMAGES.push({ key: `arrow_${c}`, url: `${A2}/Units/${c}/Archer/Arrow.png` });
+});
 for (let i = 1; i <= 18; i++) {
   IMAGES.push({ key: `deco_${i}`, url: `${A}/Deco/${String(i).padStart(2, '0')}.png` });
 }
