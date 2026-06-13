@@ -148,7 +148,7 @@ export class GameRoom extends Room<GameState> {
 
   private initMap(fixedSeed?: number): void {
     const seed = fixedSeed ?? (Math.random() * 0xffffffff) >>> 0;
-    const map = generateMap(seed);
+    const map = generateMap(seed, { size: this.state.mapSize, npcCount: this.state.npcCount });
     this.state.mapSeed = seed;
     this.state.mapWidth = map.width;
     this.state.mapHeight = map.height;
@@ -161,10 +161,14 @@ export class GameRoom extends Room<GameState> {
     map.intersections.forEach(n => {
       this.state.intersections.set(n.id, new IntersectionNode(n.id, n.x, n.y, n.name));
     });
+    // NPC aggression scales wave frequency + how soon the first wave comes.
+    const aggro = this.state.npcAggro || 1;
+    const interval = Math.max(60, Math.round(PVE_SPAWN_INTERVAL / aggro));
+    const firstWave = Math.max(120, Math.round(PVE_FIRST_WAVE_TICK / aggro));
     map.lairs.forEach(l => {
       const lair = new LairNode(l.id, l.x, l.y, l.type);
-      lair.spawnIntervalTicks = PVE_SPAWN_INTERVAL;
-      lair.lastSpawnTick = PVE_FIRST_WAVE_TICK - PVE_SPAWN_INTERVAL;
+      lair.spawnIntervalTicks = interval;
+      lair.lastSpawnTick = firstWave - interval;
       this.state.lairs.set(l.id, lair);
     });
     const allNodes = [...map.cities, ...map.intersections, ...map.lairs];
@@ -585,6 +589,8 @@ export class GameRoom extends Room<GameState> {
         unit.originNodeId = lair.id;
         unit.targetNodeId = targetCityId;
         unit.t = i / slots; // one per tile, marching out in file
+        const power = this.state.npcPower || 1;
+        if (power !== 1) { unit.maxHealth = Math.round(unit.maxHealth * power); unit.health = unit.maxHealth; }
         this.state.units.set(unit.id, unit);
       }
     });
@@ -1004,6 +1010,8 @@ export class GameRoom extends Room<GameState> {
         if (owner.hasTech('dmg_lancer') && attacker.type === 'lancer') base *= 1.25;
         if (owner.hasTech('dmg_archer') && attacker.type === 'archer') base *= 1.25;
       }
+    } else {
+      base *= (this.state.npcPower || 1); // NPC power scales enemy damage
     }
 
     // Armour soaks damage; the attacker's penetration ignores a fraction of it.

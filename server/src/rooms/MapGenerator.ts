@@ -48,22 +48,32 @@ function segIntersect(p1: any, p2: any, p3: any, p4: any): { x: number; y: numbe
   return { x: p1.x + t * (p2.x - p1.x), y: p1.y + t * (p2.y - p1.y) };
 }
 
-export function generateMap(seed: number): GeneratedMap {
+// Map-size presets. More cities than players gives neutral forts to capture.
+const MAP_PRESETS: Record<string, { width: number; height: number; cities: number; spacing: number }> = {
+  small:  { width: 3400, height: 2200, cities: 4, spacing: 880 },
+  medium: { width: 4800, height: 3008, cities: 6, spacing: 1040 },
+  large:  { width: 6400, height: 4000, cities: 8, spacing: 1180 },
+};
+
+export interface MapOpts { size?: string; npcCount?: number; }
+
+export function generateMap(seed: number, opts: MapOpts = {}): GeneratedMap {
   const rng = mulberry32(seed);
-  const width = 4800, height = 3008;
-  const margin = 480;
+  const preset = MAP_PRESETS[opts.size ?? 'medium'] ?? MAP_PRESETS.medium;
+  const width = preset.width, height = preset.height;
+  const margin = Math.round(width * 0.1);
 
   // ── Cities ──
-  const cityCount = 4;
+  const cityCount = preset.cities;
   const cities: GenNode[] = [];
   const namePool = [...CITY_NAMES];
   let attempts = 0;
-  while (cities.length < cityCount && attempts++ < 400) {
+  while (cities.length < cityCount && attempts++ < 600) {
     const p = {
       x: margin + rng() * (width - margin * 2),
       y: margin + rng() * (height - margin * 2),
     };
-    if (cities.some(c => dist(c, p) < 1100)) continue;
+    if (cities.some(c => dist(c, p) < preset.spacing)) continue;
     const name = namePool.splice(Math.floor(rng() * namePool.length), 1)[0];
     cities.push({ id: `city_${cities.length}`, x: Math.round(p.x), y: Math.round(p.y), name });
   }
@@ -108,16 +118,21 @@ export function generateMap(seed: number): GeneratedMap {
     { type: 'spider', name: 'Spider Cave' },
     { type: 'goblin', name: 'Goblin Stump' },
   ];
+  const wantLairs = Math.max(0, opts.npcCount ?? 2);
   attempts = 0;
-  while (lairs.length < lairTypes.length && attempts++ < 400) {
+  while (lairs.length < wantLairs && attempts++ < 800) {
     const p = {
       x: 300 + rng() * (width - 600),
       y: 300 + rng() * (height - 600),
     };
     if (cities.some(c => dist(c, p) < 800)) continue;
-    if (lairs.some(l => dist(l, p) < 1200)) continue;
-    const lt = lairTypes[lairs.length];
-    lairs.push({ id: `lair_${lt.type}`, x: Math.round(p.x), y: Math.round(p.y), name: lt.name, type: lt.type });
+    if (lairs.some(l => dist(l, p) < 1000)) continue;
+    const lt = lairTypes[lairs.length % lairTypes.length];
+    const n = Math.floor(lairs.length / lairTypes.length);
+    lairs.push({
+      id: `lair_${lt.type}_${lairs.length}`, x: Math.round(p.x), y: Math.round(p.y),
+      name: n > 0 ? `${lt.name} ${n + 1}` : lt.name, type: lt.type,
+    });
   }
 
   interface Seg { a: GenNode; b: GenNode; }
