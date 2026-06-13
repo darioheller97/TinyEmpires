@@ -219,8 +219,13 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   // expose the map's water background as a blue square, so keep the opaque cap.
   const cliffFrames = (r: number, c: number): [number, number] => {
     const le = !cliffHere(r, c - 1), re = !cliffHere(r, c + 1);
-    if (le && !re && !isLand(r, c - 1)) return [36, 45];
-    if (re && !le && !isLand(r, c + 1)) return [39, 48];
+    // Taper a cliff edge into the sea with the diagonal grass corners whenever
+    // that side is open water. This also rounds isolated single-tile steps
+    // along a diagonal coast, which used to stay square and look cut off.
+    // (Inland plateau edges sit over grass, not water, so they keep the opaque
+    // cap below and never expose the water background as a blue square.)
+    if (re && !isLand(r, c + 1)) return [39, 48]; // water to the right → round right
+    if (le && !isLand(r, c - 1)) return [36, 45]; // water to the left  → round left
     const cap = le ? CAP[0] : (re ? CAP[3] : CAP[1]);
     const rock = le ? CLIFF_UP[0] : (re ? CLIFF_UP[3] : (c & 1 ? CLIFF_UP[1] : CLIFF_UP[2]));
     return [cap, rock];

@@ -222,7 +222,10 @@ export function unitSkin(type: string, ownerHex: string | undefined): { base: st
   const enemy = type === 'goblin' || type === 'spider';
   const c = enemy ? 'Black' : factionOf(ownerHex);
   const cls = unitClass(type);
-  return { base: `u_${c}_${cls}`, scale: cls === 'lancer' ? 0.42 : 0.62 };
+  // The lancer's figure fills a 320px frame but its body is the same pixel
+  // footprint as the others, so it shares the standard scale — 0.42 rendered
+  // it tiny. A hair smaller than the rest keeps the long lance from dominating.
+  return { base: `u_${c}_${cls}`, scale: cls === 'lancer' ? 0.58 : 0.62 };
 }
 
 // ── Autotiling ──
