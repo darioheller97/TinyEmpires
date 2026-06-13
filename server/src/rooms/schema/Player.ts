@@ -30,6 +30,8 @@ export class Player extends Schema {
   @type('boolean') isHost: boolean = false;
   @type('boolean') eliminated: boolean = false;
   @type('boolean') isBot: boolean = false;
+  // Tick the Rally commander ability becomes usable again (synced for the cooldown UI).
+  @type('number') rallyReadyTick: number = 0;
   lastEconomyTick: number = 0;
 
   // Tech flags (comma-separated string since Colyseus MapSchema is complex)

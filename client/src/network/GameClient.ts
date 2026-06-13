@@ -100,6 +100,15 @@ export class GameClient {
     this.room?.send('set_rally', { cityId, roadId });
   }
 
+  // Reactive command: order my army on a lane (push / hold / fallback) + Rally.
+  armyOrder(lane: string, command: string): void {
+    this.room?.send('army_order', { lane, command });
+  }
+
+  commanderRally(lane: string): void {
+    this.room?.send('commander_rally', { lane });
+  }
+
   buildStructure(cityId: string, type: string): void {
     this.room?.send('build_structure', { cityId, type });
   }

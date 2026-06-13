@@ -19,6 +19,7 @@ const STEPS: { icon: string; title: string; body: string }[] = [
   { icon: '⚔️', title: 'Train & march', body: 'Click a Barracks, Archery or Church to train troops — they auto-march your roads on the beat.' },
   { icon: '➡️', title: 'Steer at crossroads', body: 'Right-click a road, or click a crossroads sign, to aim your army down a lane toward an enemy fort.' },
   { icon: '✊', title: 'Counters matter', body: 'Knights beat Archers · Archers beat Lancers · Lancers beat Knights. Scout, then compose to counter.' },
+  { icon: '🎖', title: 'Command your armies', body: 'Click a lane with your troops to command it: Push, Hold (brace), or Fall Back. Hit Rally (R) for a clutch damage + heal burst.' },
   { icon: '✦', title: 'Hold the camps', body: 'Capture neutral camps on the central lanes — a gold mine, mercenary camp or shrine. Park troops to hold them for gold, free units or a battle buff.' },
   { icon: '🪙', title: 'Grow your economy', body: 'Hire villagers from your castle to gather wood, food and gold. Spend gold on tech (top-left) and keep upgrades.' },
 ];

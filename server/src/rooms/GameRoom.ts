@@ -62,6 +62,13 @@ const OBJ_MINE_WOOD = 2;               // wood/economy-tick a held gold mine yie
 const OBJ_MERC_INTERVAL = 240;         // ticks (~24s) between free mercenaries
 const OBJ_SHRINE_DAMAGE_MULT = 1.15;   // combat damage buff while a shrine is held
 
+// ── Interactive clash: lane army orders + Rally commander ability ──
+const HOLD_BRACE_MULT = 0.85;          // damage taken while an army holds (braces)
+const RALLY_COOLDOWN_TICKS = 300;      // 30s between Rally casts
+const RALLY_BUFF_TICKS = 3 * MOVE_BEAT_TICKS; // buff lasts ~3 beats
+const RALLY_DMG_MULT = 1.25;           // attack bonus to a rallied army
+const RALLY_HEAL = 12;                  // instant heal to each rallied unit
+
 /**
  * Rasterize a road spline into a 4-connected sequence of 64px tiles.
  * MUST stay identical to the client version (terrain.ts) — units hop
@@ -431,6 +438,27 @@ export class GameRoom extends Room<GameState> {
       const road = this.state.roads.get(msg.roadId);
       if (!road || road.fromId !== city.id) return; // must be an outgoing road
       city.rallyRoadId = msg.roadId;
+    });
+
+    // Reactive command: order my whole army on a lane to push / hold / fall back.
+    this.onMessage('army_order', (client, msg: { lane: string; command: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      const command = msg.command === 'hold' || msg.command === 'fallback' ? msg.command : '';
+      this.unitsOnLane(msg.lane, client.sessionId).forEach(u => { u.order = command; });
+    });
+
+    // Rally commander ability: a beat of fury for my army on a lane (cooldown).
+    this.onMessage('commander_rally', (client, msg: { lane: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || this.state.tick < player.rallyReadyTick) return;
+      const army = this.unitsOnLane(msg.lane, client.sessionId);
+      if (army.length === 0) return;
+      army.forEach(u => {
+        u.rallyBuffUntil = this.state.tick + RALLY_BUFF_TICKS;
+        u.health = Math.min(u.maxHealth, u.health + RALLY_HEAL);
+      });
+      player.rallyReadyTick = this.state.tick + RALLY_COOLDOWN_TICKS;
     });
 
     this.onMessage('research_tech', (client, msg: { techId: string }) => {
@@ -987,7 +1015,12 @@ export class GameRoom extends Room<GameState> {
     roadUnits.sort((a, b) => b.t - a.t);
 
     for (const unit of roadUnits) {
-      if (unit.status === 'fighting' || unit.status === 'sieging' || unit.status === 'defending') continue;
+      // Reactive orders: hold braces in place; fallback retreats homeward (even
+      // out of a fight); push/'' marches normally.
+      if (unit.order === 'hold') continue;
+      const retreating = unit.order === 'fallback';
+      if (retreating) this.faceHome(unit);
+      if (!retreating && (unit.status === 'fighting' || unit.status === 'sieging' || unit.status === 'defending')) continue;
       const road = this.state.roads.get(unit.roadId);
       if (!road) { toRemove.push(unit.id); this.refundPop(unit.ownerId); continue; }
       if (!TROOP_STATS[unit.type]) { toRemove.push(unit.id); continue; }
@@ -1003,7 +1036,7 @@ export class GameRoom extends Room<GameState> {
         } else if (this.state.lairs.has(targetId)) {
           this.arriveAtLair(unit, targetId, toRemove);
         } else {
-          const nextRoad = this.findNextRoad(unit, road, targetId);
+          const nextRoad = retreating ? this.findRetreatRoad(unit, targetId) : this.findNextRoad(unit, road, targetId);
           if (nextRoad) {
             unit.roadId = nextRoad.id;
             unit.t = 0;
@@ -1031,6 +1064,15 @@ export class GameRoom extends Room<GameState> {
   private arriveAtCity(unit: UnitNode, cityId: string, toRemove: string[]): void {
     const city = this.state.cities.get(cityId);
     if (!city) { toRemove.push(unit.id); this.refundPop(unit.ownerId); return; }
+
+    // A retreating army stops to garrison the moment it reaches a friendly fort
+    // (order cleared); if the fort isn't mine, keep routing homeward instead.
+    if (unit.order === 'fallback') {
+      if (city.ownerId === unit.ownerId) { unit.order = ''; unit.t = 1; unit.status = 'defending'; unit.atNodeId = cityId; return; }
+      const next = this.findRetreatRoad(unit, cityId);
+      if (next) { unit.roadId = next.id; unit.t = 0; unit.originNodeId = cityId; unit.roadsCrossed++; return; }
+      unit.order = '';
+    }
 
     if (city.ownerId === unit.ownerId) {
       // Friendly/captured fort: defend if it's under siege, otherwise march on
@@ -1130,6 +1172,61 @@ export class GameRoom extends Room<GameState> {
     const cursor = this.spreadCursor.get(key) ?? 0;
     this.spreadCursor.set(key, cursor + 1);
     return ranked[cursor % ranked.length];
+  }
+
+  // ─── Lane army orders (reactive command) ────────────────────
+  // A "lane army" = one player's non-villager units on one physical road
+  // (both directions share a pairKey). Reuses the processCombat grouping idea.
+  private unitsOnLane(roadId: string, ownerId: string): UnitNode[] {
+    const lane = this.pairKey(roadId);
+    const out: UnitNode[] = [];
+    this.state.units.forEach(u => {
+      if (u.ownerId === ownerId && u.type !== 'villager' && !u.atNodeId && this.pairKey(u.roadId) === lane) out.push(u);
+    });
+    return out;
+  }
+
+  /** The player's own city nearest the given unit (for homeward retreat). */
+  private nearestOwnedCity(unit: UnitNode): CityNode | null {
+    const here = this.unitWorldPos(unit);
+    let best: CityNode | null = null, bestD = Infinity;
+    this.state.cities.forEach(c => {
+      if (c.ownerId !== unit.ownerId) return;
+      const d = Math.hypot(c.x - here.x, c.y - here.y);
+      if (d < bestD) { bestD = d; best = c; }
+    });
+    return best;
+  }
+
+  /** Turn a falling-back unit around so its road points homeward (one-shot). */
+  private faceHome(unit: UnitNode): void {
+    const road = this.state.roads.get(unit.roadId);
+    const home = this.nearestOwnedCity(unit);
+    if (!road || !home) return;
+    const toPos = this.getNodePos(road.toId), fromPos = this.getNodePos(road.fromId);
+    if (!toPos || !fromPos) return;
+    // If the road's start is closer to home than its end, the enemy is ahead —
+    // flip onto the reverse road so advancing now carries the army homeward.
+    if (Math.hypot(fromPos.x - home.x, fromPos.y - home.y) < Math.hypot(toPos.x - home.x, toPos.y - home.y)) {
+      const rev = this.reverseRoad.get(unit.roadId);
+      if (rev) { unit.roadId = rev; unit.t = 1 - unit.t; unit.originNodeId = road.toId; }
+    }
+  }
+
+  /** At a node, the outgoing road whose far end is nearest the unit's home. */
+  private findRetreatRoad(unit: UnitNode, nodeId: string): Road | null {
+    const home = this.nearestOwnedCity(unit);
+    const reverseId = this.reverseRoad.get(unit.roadId);
+    let best: Road | null = null, bestD = Infinity;
+    this.state.roads.forEach(r => {
+      if (r.fromId !== nodeId || r.id === reverseId) return;
+      if (this.state.lairs.has(r.toId)) return;
+      const p = this.getNodePos(r.toId);
+      if (!p || !home) return;
+      const d = Math.hypot(p.x - home.x, p.y - home.y);
+      if (d < bestD) { bestD = d; best = r; }
+    });
+    return best || this.state.roads.get(reverseId || '') || null;
   }
 
   // ─── Combat ─────────────────────────────────────────────────
@@ -1232,6 +1329,9 @@ export class GameRoom extends Room<GameState> {
     // A held shrine empowers all of the holder's troops in battle.
     if (!attacker.isPvE && this.holdsShrine(attacker.ownerId)) base *= OBJ_SHRINE_DAMAGE_MULT;
 
+    // Rally commander ability: a rallied attacker hits harder for a few beats.
+    if (!attacker.isPvE && attacker.rallyBuffUntil > this.state.tick) base *= RALLY_DMG_MULT;
+
     // Armour soaks damage; the attacker's penetration ignores a fraction of it.
     // Knights (high armour) shrug off arrows; lancers (high pen) punch through.
     const armor = (dStats?.armor ?? 0) * (1 - aStats.armorPen);
@@ -1240,6 +1340,8 @@ export class GameRoom extends Room<GameState> {
     // Anti-snowball: attackers weaken with distance, defenders near home resist
     dmg *= Math.max(0.5, 1.0 - attacker.distanceTraveled * 0.10);
     if (defender.status === 'defending' || defender.distanceTraveled < 0.5) dmg *= 0.85;
+    // A braced army on Hold soaks more — the reward for standing firm.
+    if (defender.order === 'hold') dmg *= HOLD_BRACE_MULT;
     return Math.max(1, Math.floor(dmg));
   }
 

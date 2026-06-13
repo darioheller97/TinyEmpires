@@ -54,6 +54,9 @@ export class UnitNode extends Schema {
   @type('string') status: string = 'marching';
   // Node id a sieging/defending unit is parked at ('' while on the road)
   @type('string') atNodeId: string = '';
+  // Player-issued march order: '' (push, default) | 'hold' | 'fallback'.
+  // Synced so the client can show stance cues for every player's armies.
+  @type('string') order: string = '';
 
   // Free-position coordinates (villagers walk off-road)
   @type('number') x: number = 0;
@@ -65,6 +68,8 @@ export class UnitNode extends Schema {
   @type('number') carrying: number = 0;
 
   lastCombatTick: number = 0;
+  // Rally commander ability: while tick < rallyBuffUntil this unit hits harder.
+  rallyBuffUntil: number = 0;
   // PvE units head for this city
   targetNodeId: string = '';
   // Villagers: home city, current target node

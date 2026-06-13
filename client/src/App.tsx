@@ -12,6 +12,7 @@ import MainMenu from './ui/MainMenu';
 import Lobby, { LobbyView, LobbyPlayer } from './ui/Lobby';
 import EndScreen from './ui/EndScreen';
 import HowToPlay from './ui/HowToPlay';
+import ArmyOrders from './ui/ArmyOrders';
 import { PANEL as SKIN_PANEL } from './ui/skin';
 import { GameClient, MatchSettings } from './network/GameClient';
 import { playSfx, toggleMute } from './game/audio';
@@ -202,6 +203,14 @@ export default function App() {
   const handleResearch = useCallback((techId: string) => {
     client()?.researchTech(techId); playSfx('build_place', { volume: 0.5 });
   }, []);
+  const handleArmyOrder = useCallback((command: string) => {
+    if (selection.type === 'army' && selection.data?.lane) {
+      client()?.armyOrder(selection.data.lane, command); playSfx('ui_click', { volume: 0.4 });
+    }
+  }, [selection]);
+  const handleRally = useCallback(() => {
+    if (selection.type === 'army' && selection.data?.lane) client()?.commanderRally(selection.data.lane);
+  }, [selection]);
   const handleToggleMute = useCallback(() => setMuted(toggleMute()), []);
   const handleRotateRoute = useCallback(() => { sceneRef.current?.rotateIntersectionRoute(); }, []);
   const handleNavigate = useCallback((x: number, y: number) => { sceneRef.current?.centerCamera(x, y); }, []);
@@ -312,6 +321,19 @@ export default function App() {
                 Click or press <b>R</b> to aim troops down a road. No arrow = units spread out.
               </div>
             </div>
+          </div>
+        )}
+        {selection.type === 'army' && (
+          <div style={BOTTOM_RIGHT}>
+            <ArmyOrders
+              visible
+              count={selectionData.count || 0}
+              hpPct={selectionData.hpPct ?? 100}
+              order={selectionData.order || ''}
+              rallyReadyIn={selectionData.rallyReadyIn || 0}
+              onOrder={handleArmyOrder}
+              onRally={handleRally}
+            />
           </div>
         )}
       </div>

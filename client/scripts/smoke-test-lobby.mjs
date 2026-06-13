@@ -47,7 +47,24 @@ host.leave(); guest.leave();
 const solo = await new Client(url).joinOrCreate('game_room', { code: 'SOLOX', solo: true, npcCount: 1 });
 await sleep(900);
 check('solo auto-starts', solo.state.phase === 'active', `phase=${solo.state.phase}`);
-check('solo player has a capital', !!solo.state.players.get(solo.sessionId)?.connectedCityId);
+const soloMe = solo.state.players.get(solo.sessionId);
+check('solo player has a capital', !!soloMe?.connectedCityId);
+
+// ── Interactive clash: command a lane army (push/hold/fallback) + Rally ──
+solo.send('build_structure', { cityId: soloMe.connectedCityId, type: 'barracks' });
+await sleep(500);
+solo.send('spawn_troops', { cityId: soloMe.connectedCityId, type: 'knight' });
+await sleep(1300);
+const armyUnit = [...solo.state.units.values()].find(u => u.ownerId === solo.sessionId && u.roadId);
+check('army unit marching on a lane', !!armyUnit, `units=${solo.state.units.size}`);
+if (armyUnit) {
+  solo.send('army_order', { lane: armyUnit.roadId, command: 'hold' });
+  await sleep(400);
+  check('army_order sets the unit stance', armyUnit.order === 'hold', `order=${armyUnit.order}`);
+  solo.send('commander_rally', { lane: armyUnit.roadId });
+  await sleep(400);
+  check('commander_rally starts the cooldown', soloMe.rallyReadyTick > 0, `readyTick=${soloMe.rallyReadyTick}`);
+}
 solo.leave();
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);

@@ -42,7 +42,7 @@ interface CityEntry {
   archerKey: string;
 }
 
-export type SelectionType = 'city' | 'intersection' | 'building' | 'resource' | 'none';
+export type SelectionType = 'city' | 'intersection' | 'building' | 'resource' | 'army' | 'none';
 export interface SelectionInfo {
   type: SelectionType; id: string; name: string; data?: any;
 }
@@ -117,6 +117,14 @@ export default class GameScene extends Phaser.Scene {
   private myRoutes: Map<string, string> = new Map();
   private intersectionArrows: Map<string, Phaser.GameObjects.Image> = new Map();
   private dragMoved = false;
+
+  // Interactive clash: lane army command state.
+  private selArmyLaneKey = '';   // sorted from|to key of the selected lane
+  private selArmyRoadId = '';    // a representative road id to send to the server
+  private armyLaneGfx: Phaser.GameObjects.Graphics | null = null;
+  private serverTick = 0;
+  private myRallyReadyTick = 0;
+  private prevRallyReadyTick = -1; // -1 = not yet initialised from server
 
   // Resource nodes (server-driven trees/sheep/gold)
   private resourceGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: any }> = new Map();
@@ -964,6 +972,8 @@ export default class GameScene extends Phaser.Scene {
       if (pos) existing.container.setData('worldPos', pos);
       existing.container.setData('targetResourceId', unit.targetResourceId);
       existing.container.setData('fighting', combatant);
+      existing.container.setData('order', unit.order || '');
+      existing.container.setData('laneKey', this.laneKeyOf(unit.roadId));
       const animKey = `${existing.base}_${desiredAnim}`;
       // While a beat-swing is mid-play, leave the sprite to swingCombatUnits().
       const midSwing = combatant && existing.anim === `${existing.base}_attack`;
@@ -1007,6 +1017,8 @@ export default class GameScene extends Phaser.Scene {
     container.setData('isVillager', unit.type === 'villager');
     container.setData('unitType', unit.type);
     container.setData('fighting', combatant);
+    container.setData('order', unit.order || '');
+    container.setData('laneKey', this.laneKeyOf(unit.roadId));
     container.setData('targetResourceId', unit.targetResourceId);
     container.setDepth(DEPTH_ENTITY + pos.y * 0.01);
     // Click a pawn to flash the node it's currently gathering.
@@ -1520,10 +1532,104 @@ export default class GameScene extends Phaser.Scene {
   private selectEntity(type: SelectionType, id: string, name: string, data?: any): void {
     if (type !== 'intersection') this.hideRadialMenu();
     playSfx('ui_click', { volume: 0.4, throttleMs: 60 });
+    this.selArmyLaneKey = ''; this.selArmyRoadId = ''; this.clearArmyLane();
     this.selection = { type, id, name, data };
     this.redrawSelectionRing();
     const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void);
     if (onSelection) onSelection({ ...this.selection });
+  }
+
+  // ── Interactive clash: lane army selection + orders ──────────
+  /** Canonical physical-lane key for a road (direction-independent). */
+  private laneKeyOf(roadId: string): string {
+    const r = this.roadsById.get(roadId) as any;
+    return r ? [r.fromId, r.toId].sort().join('|') : '';
+  }
+
+  /** Click near a lane I have troops on → select that lane's army to command it. */
+  private selectArmyAtPoint(world: { x: number; y: number }): boolean {
+    const myId = this.client?.sessionId;
+    if (!myId) return false;
+    let bestRoad: any = null, bestD = 72 * 72;
+    this.roadsById.forEach((r: any) => {
+      for (const pt of r.splinePoints) {
+        const d = Phaser.Math.Distance.Squared(world.x, world.y, pt.x, pt.y);
+        if (d < bestD) { bestD = d; bestRoad = r; }
+      }
+    });
+    if (!bestRoad) return false;
+    const laneKey = this.laneKeyOf(bestRoad.id);
+    let has = false;
+    this.unitGfx.forEach(u => {
+      if (has || u.container.getData('ownerId') !== myId || u.container.getData('isVillager')) return;
+      if (u.container.getData('laneKey') === laneKey) has = true;
+    });
+    if (!has) return false;
+    playSfx('ui_click', { volume: 0.4, throttleMs: 60 });
+    this.selArmyLaneKey = laneKey;
+    this.selArmyRoadId = bestRoad.id;
+    this.drawArmyLane(bestRoad);
+    this.refreshArmySelection();
+    return true;
+  }
+
+  /** Recompute the selected army's size/health/order/cooldown and push to the HUD. */
+  private refreshArmySelection(): void {
+    const myId = this.client?.sessionId;
+    if (!myId || !this.selArmyLaneKey) return;
+    let count = 0, hpSum = 0, cx = 0, cy = 0, order = '';
+    this.unitGfx.forEach(u => {
+      if (u.container.getData('ownerId') !== myId || u.container.getData('isVillager')) return;
+      if (u.container.getData('laneKey') !== this.selArmyLaneKey) return;
+      count++;
+      hpSum += (u.container.getData('hpRatio') as number) ?? 1;
+      cx += u.container.x; cy += u.container.y;
+      if (u.container.getData('order')) order = u.container.getData('order');
+    });
+    if (count === 0) { this.clearSelection(); return; }
+    cx /= count; cy /= count;
+    const rallyReadyIn = Math.max(0, Math.round((this.myRallyReadyTick - this.serverTick) * 0.1));
+    const data = { lane: this.selArmyRoadId, laneKey: this.selArmyLaneKey, count, hpPct: Math.round((hpSum / count) * 100), order, rallyReadyIn, x: cx, y: cy };
+    this.selection = { type: 'army', id: this.selArmyLaneKey, name: 'Army', data };
+    const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void);
+    if (onSelection) onSelection({ ...this.selection });
+  }
+
+  private drawArmyLane(road: any): void {
+    if (!this.armyLaneGfx) this.armyLaneGfx = this.add.graphics().setDepth(39);
+    const g = this.armyLaneGfx;
+    g.clear();
+    const pts = road.splinePoints as { x: number; y: number }[];
+    if (!pts || pts.length < 2) return;
+    g.lineStyle(10, 0xffe07a, 0.22);
+    g.beginPath(); g.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+    g.strokePath();
+  }
+
+  private clearArmyLane(): void {
+    if (this.armyLaneGfx) this.armyLaneGfx.clear();
+  }
+
+  /** Keyboard/HUD: order the selected army. command: '' push | 'hold' | 'fallback'. */
+  private issueArmyOrder(command: string): void {
+    if (this.selection.type !== 'army' || !this.selArmyRoadId) return;
+    this.client?.armyOrder(this.selArmyRoadId, command);
+    playSfx('ui_click', { volume: 0.4, throttleMs: 60 });
+  }
+
+  private triggerRally(): void {
+    if (this.selection.type !== 'army' || !this.selArmyRoadId) return;
+    this.client?.commanderRally(this.selArmyRoadId);
+  }
+
+  /** Beat-timed rally flourish on an army's centre (fired when the cast confirms). */
+  private rallyPulse(x: number, y: number): void {
+    this.sparkleRing(x, y, '#ffd54a');
+    this.impactBurst(x, y, true);
+    this.shakeAt(x, y, 0.004, 160);
+    this.emitEvent('rally', '⚔ Rally!', { x, y, color: '#ffd54a', throttleMs: 400, throttleKey: 'rally' });
+    playSfx('coins_gold', { volume: 0.4, x, y, throttleMs: 300, throttleKey: 'rally' });
   }
 
   // Make the active building/city glow so the player sees what's selected,
@@ -1575,7 +1681,8 @@ export default class GameScene extends Phaser.Scene {
       this.clearSelMarker();
       this.clearGlow();
       this.selMarkerKey = key;
-      if (data) {
+      // Armies are a moving column shown via the lane highlight, not a fixed marker.
+      if (data && type !== 'army') {
         const half = type === 'city' ? 80 : type === 'building' ? 48 : type === 'intersection' ? 30 : 36;
         this.showSelMarker(data.x, data.y, half);
         if (type === 'city') this.setGlow(this.cityGfx.get(id)?.gfx);
@@ -1605,6 +1712,7 @@ export default class GameScene extends Phaser.Scene {
 
   private clearSelection(): void {
     this.hideRadialMenu();
+    this.selArmyLaneKey = ''; this.selArmyRoadId = ''; this.clearArmyLane();
     this.selection = { type: 'none', id: '', name: '' };
     if (this.selectionRing) this.selectionRing.clear();
     this.clearSelMarker();
@@ -1672,8 +1780,17 @@ export default class GameScene extends Phaser.Scene {
       }
       const hits = this.input.hitTestPointer(p);
       const hitInteractive = hits.some(h => (h as any).input && (h as any).input.enabled);
-      if (!hitInteractive) this.clearSelection();
+      if (hitInteractive) return;
+      // Empty-ground click: try to select my army on the nearest lane; only clear
+      // the selection if there's no army to command there.
+      const world = this.cameras.main.getWorldPoint(p.x, p.y);
+      if (!this.selectArmyAtPoint(world)) this.clearSelection();
     });
+    // Keyboard commands for the selected army (desktop): 1 push · 2 hold · 3 fall back · R Rally.
+    this.input.keyboard?.on('keydown-ONE', () => this.issueArmyOrder(''));
+    this.input.keyboard?.on('keydown-TWO', () => this.issueArmyOrder('hold'));
+    this.input.keyboard?.on('keydown-THREE', () => this.issueArmyOrder('fallback'));
+    this.input.keyboard?.on('keydown-R', () => this.triggerRally());
   }
 
   // ── Tower placement (free placement inside the city's influence) ──
@@ -1737,6 +1854,7 @@ export default class GameScene extends Phaser.Scene {
     if (state.players) {
       state.players.forEach((p: any, id: string) => this.playerColors.set(id, p.colorHex));
     }
+    this.serverTick = state.tick || 0;
 
     if (!this.mapBuilt) {
       if (!state.roads || state.roads.size === 0) return;
@@ -1878,6 +1996,9 @@ export default class GameScene extends Phaser.Scene {
       }
     });
 
+    // Keep the selected army's HUD readout (size/health/order/cooldown) live.
+    if (this.selection.type === 'army') this.refreshArmySelection();
+
     if (myId && state.players) {
       const me = state.players.get(myId);
       if (me) {
@@ -1886,6 +2007,16 @@ export default class GameScene extends Phaser.Scene {
           wood: me.wood, food: me.food, gold: me.gold,
           popUsed: me.populationUsed, popCap: me.populationCap,
         });
+        // Rally cooldown tracking + cast flourish (fires for keyboard or HUD button).
+        this.myRallyReadyTick = me.rallyReadyTick || 0;
+        if (this.prevRallyReadyTick < 0) {
+          this.prevRallyReadyTick = this.myRallyReadyTick; // first sight: no flourish
+        } else if (this.myRallyReadyTick > this.prevRallyReadyTick) {
+          if (this.selection.type === 'army' && this.selection.data) {
+            this.rallyPulse(this.selection.data.x, this.selection.data.y);
+          }
+          this.prevRallyReadyTick = this.myRallyReadyTick;
+        }
         const techs = me.researchedTechs ? me.researchedTechs.split(',').filter(Boolean) : [];
         const onTechsUpdate = this.game.registry.get('onTechsUpdate') as ((t: string[]) => void) | undefined;
         if (onTechsUpdate) onTechsUpdate(techs);
