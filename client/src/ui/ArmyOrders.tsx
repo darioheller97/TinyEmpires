@@ -46,10 +46,10 @@ export default function ArmyOrders({ visible, count, hpPct, order, rallyReadyIn,
       <button
         style={{ ...(rallyReady ? BUTTON_GREEN : BUTTON_DISABLED), width: '100%', fontSize: 12, marginTop: 2 }}
         disabled={!rallyReady}
-        title="Rally: +25% damage & a heal to this army for a few beats (key R)"
+        title="Rally: start a beat combo — tap SPACE on each beat. Better rhythm = bigger damage + heal (key R)"
         onClick={onRally}
       >
-        {rallyReady ? '✊ Rally! (R)' : `✊ Rally — ${rallyReadyIn}s`}
+        {rallyReady ? '✊ Rally! — tap to the beat (R)' : `✊ Rally — ${rallyReadyIn}s`}
       </button>
     </div>
   );

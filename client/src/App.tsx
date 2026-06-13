@@ -209,7 +209,8 @@ export default function App() {
     }
   }, [selection]);
   const handleRally = useCallback(() => {
-    if (selection.type === 'army' && selection.data?.lane) client()?.commanderRally(selection.data.lane);
+    // Casting is a rhythm minigame owned by the scene; the button just starts it.
+    if (selection.type === 'army') sceneRef.current?.castRally();
   }, [selection]);
   const handleToggleMute = useCallback(() => setMuted(toggleMute()), []);
   const handleRotateRoute = useCallback(() => { sceneRef.current?.rotateIntersectionRoute(); }, []);

@@ -65,9 +65,11 @@ const OBJ_SHRINE_DAMAGE_MULT = 1.15;   // combat damage buff while a shrine is h
 // ── Interactive clash: lane army orders + Rally commander ability ──
 const HOLD_BRACE_MULT = 0.85;          // damage taken while an army holds (braces)
 const RALLY_COOLDOWN_TICKS = 300;      // 30s between Rally casts
-const RALLY_BUFF_TICKS = 3 * MOVE_BEAT_TICKS; // buff lasts ~3 beats
-const RALLY_DMG_MULT = 1.25;           // attack bonus to a rallied army
-const RALLY_HEAL = 12;                  // instant heal to each rallied unit
+// Rally strength scales with the rhythm-cast accuracy (0..1 power factor):
+// a sloppy cast still helps a little, a perfect combo is a big swing.
+const RALLY_DMG_MIN = 1.10, RALLY_DMG_MAX = 1.45;   // attack multiplier floor/ceiling
+const RALLY_HEAL_MIN = 3, RALLY_HEAL_MAX = 20;       // instant heal floor/ceiling
+const RALLY_BUFF_BEATS_MIN = 2, RALLY_BUFF_BEATS_MAX = 4; // buff duration in beats
 
 /**
  * Rasterize a road spline into a 4-connected sequence of 64px tiles.
@@ -449,14 +451,21 @@ export class GameRoom extends Room<GameState> {
     });
 
     // Rally commander ability: a beat of fury for my army on a lane (cooldown).
-    this.onMessage('commander_rally', (client, msg: { lane: string }) => {
+    // The client casts it as a rhythm combo; `power` (0..1) = the hit accuracy,
+    // which scales the buff strength. Clamp server-side; cooldown is fixed.
+    this.onMessage('commander_rally', (client, msg: { lane: string; power?: number }) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || this.state.tick < player.rallyReadyTick) return;
       const army = this.unitsOnLane(msg.lane, client.sessionId);
       if (army.length === 0) return;
+      const power = Math.max(0, Math.min(1, msg.power ?? 1));
+      const dmgMult = RALLY_DMG_MIN + (RALLY_DMG_MAX - RALLY_DMG_MIN) * power;
+      const heal = Math.round(RALLY_HEAL_MIN + (RALLY_HEAL_MAX - RALLY_HEAL_MIN) * power);
+      const buffTicks = Math.round((RALLY_BUFF_BEATS_MIN + (RALLY_BUFF_BEATS_MAX - RALLY_BUFF_BEATS_MIN) * power) * MOVE_BEAT_TICKS);
       army.forEach(u => {
-        u.rallyBuffUntil = this.state.tick + RALLY_BUFF_TICKS;
-        u.health = Math.min(u.maxHealth, u.health + RALLY_HEAL);
+        u.rallyBuffUntil = this.state.tick + buffTicks;
+        u.rallyBuffMult = dmgMult;
+        u.health = Math.min(u.maxHealth, u.health + heal);
       });
       player.rallyReadyTick = this.state.tick + RALLY_COOLDOWN_TICKS;
     });
@@ -1329,8 +1338,9 @@ export class GameRoom extends Room<GameState> {
     // A held shrine empowers all of the holder's troops in battle.
     if (!attacker.isPvE && this.holdsShrine(attacker.ownerId)) base *= OBJ_SHRINE_DAMAGE_MULT;
 
-    // Rally commander ability: a rallied attacker hits harder for a few beats.
-    if (!attacker.isPvE && attacker.rallyBuffUntil > this.state.tick) base *= RALLY_DMG_MULT;
+    // Rally commander ability: a rallied attacker hits harder for a few beats
+    // (the multiplier was set by the cast's rhythm accuracy).
+    if (!attacker.isPvE && attacker.rallyBuffUntil > this.state.tick) base *= attacker.rallyBuffMult;
 
     // Armour soaks damage; the attacker's penetration ignores a fraction of it.
     // Knights (high armour) shrug off arrows; lancers (high pen) punch through.

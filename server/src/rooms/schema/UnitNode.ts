@@ -68,8 +68,10 @@ export class UnitNode extends Schema {
   @type('number') carrying: number = 0;
 
   lastCombatTick: number = 0;
-  // Rally commander ability: while tick < rallyBuffUntil this unit hits harder.
+  // Rally commander ability: while tick < rallyBuffUntil this unit hits harder,
+  // by rallyBuffMult (set from the cast's rhythm accuracy).
   rallyBuffUntil: number = 0;
+  rallyBuffMult: number = 1;
   // PvE units head for this city
   targetNodeId: string = '';
   // Villagers: home city, current target node

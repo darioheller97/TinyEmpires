@@ -75,6 +75,13 @@ const DEPTH_ENTITY = 10; // + y*0.01 for painter's order
 // with RPS_ADVANTAGE in server/src/rooms/schema/UnitNode.ts.
 const RPS_ADVANTAGE: Record<string, string> = { knight: 'archer', lancer: 'knight', archer: 'lancer' };
 
+// Rhythm-cast tuning (the Rally ability is cast as an osu!-style beat combo).
+const BEAT_PERIOD_MS = 800;       // 75 BPM, matches the march/beat clock
+const RHYTHM_NOTES = 4;           // hits per cast
+const RHYTHM_APPROACH_MS = 2 * BEAT_PERIOD_MS; // ring appears 2 beats early
+const RHYTHM_PERFECT_MS = 95;     // |offset| under this = Perfect
+const RHYTHM_GOOD_MS = 190;       // …under this = Good; beyond = Miss
+
 interface UnitVisual {
   container: Phaser.GameObjects.Container;
   sprite: Phaser.GameObjects.Sprite;
@@ -125,6 +132,15 @@ export default class GameScene extends Phaser.Scene {
   private serverTick = 0;
   private myRallyReadyTick = 0;
   private prevRallyReadyTick = -1; // -1 = not yet initialised from server
+
+  // Rhythm cast (Rally): osu!-style beat combo whose accuracy scales the buff.
+  private castActive = false;
+  private castLane = '';
+  private castNotes: { target: number; judged: boolean; score: number }[] = [];
+  private castGfx: Phaser.GameObjects.Container | null = null;
+  private castRing: Phaser.GameObjects.Graphics | null = null;
+  private castComboText: Phaser.GameObjects.Text | null = null;
+  private lastCastPower = 1;
 
   // Resource nodes (server-driven trees/sheep/gold)
   private resourceGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: any }> = new Map();
@@ -193,6 +209,7 @@ export default class GameScene extends Phaser.Scene {
       playSfx('beat_drum', { volume: 0.7, throttleMs: 400, throttleKey: 'beat' });
       this.swingCombatUnits(); // engaged units strike on the beat, with the drum
     }
+    if (this.castActive) this.updateRhythmCast();
 
     // Gentle day→dusk→night→dawn tint over a ~6-minute cycle. Starts at day.
     if (this.dayNight) {
@@ -1618,17 +1635,110 @@ export default class GameScene extends Phaser.Scene {
     playSfx('ui_click', { volume: 0.4, throttleMs: 60 });
   }
 
-  private triggerRally(): void {
-    if (this.selection.type !== 'army' || !this.selArmyRoadId) return;
-    this.client?.commanderRally(this.selArmyRoadId);
+  // ── Rhythm cast: the Rally ability is cast as an osu!-style beat combo ──
+  /** Start the rhythm cast for the selected army (from the R key or HUD button). */
+  castRally(): void {
+    if (this.castActive || this.selection.type !== 'army' || !this.selArmyRoadId) return;
+    if (this.serverTick < this.myRallyReadyTick) return; // still on cooldown
+    this.castActive = true;
+    this.castLane = this.selArmyRoadId;
+    const now = this.time.now;
+    // Lay notes on the upcoming downbeats, with enough lead for the first approach.
+    let firstBeat = this.beatClock + BEAT_PERIOD_MS;
+    while (firstBeat - now < BEAT_PERIOD_MS * 0.6) firstBeat += BEAT_PERIOD_MS;
+    this.castNotes = [];
+    for (let i = 0; i < RHYTHM_NOTES; i++) this.castNotes.push({ target: firstBeat + i * BEAT_PERIOD_MS, judged: false, score: 0 });
+    this.buildCastOverlay();
+    this.emitEvent('rallycast', '♪ Rally! Tap SPACE on each beat', { color: '#ffd54a', throttleMs: 300, throttleKey: 'rallycast' });
   }
 
-  /** Beat-timed rally flourish on an army's centre (fired when the cast confirms). */
+  private buildCastOverlay(): void {
+    const cam = this.cameras.main;
+    const c = this.add.container(cam.width / 2, cam.height * 0.64).setScrollFactor(0).setDepth(310);
+    const R = 36;
+    const base = this.add.graphics();
+    base.fillStyle(0x000000, 0.32).fillCircle(0, 0, R + 10);
+    base.fillStyle(0xffe07a, 0.16).fillCircle(0, 0, R);
+    base.lineStyle(4, 0xffe07a, 0.95).strokeCircle(0, 0, R);
+    const prompt = this.add.text(0, -R - 30, '♪ RALLY — SPACE / tap on the beat', {
+      fontSize: '14px', color: '#ffe9a8', fontFamily: 'monospace', stroke: '#000', strokeThickness: 4,
+    }).setOrigin(0.5);
+    const ring = this.add.graphics();
+    const combo = this.add.text(0, R + 24, '', { fontSize: '13px', color: '#fff', fontFamily: 'monospace', stroke: '#000', strokeThickness: 3 }).setOrigin(0.5);
+    c.add([base, ring, prompt, combo]);
+    this.castGfx = c; this.castRing = ring; this.castComboText = combo;
+  }
+
+  /** Per-frame: shrink the approach ring onto the beat and auto-miss late notes. */
+  private updateRhythmCast(): void {
+    if (this.selection.type !== 'army') { this.endRhythmCast(); return; } // army gone
+    const now = this.time.now;
+    this.castNotes.forEach(n => {
+      if (!n.judged && now > n.target + RHYTHM_GOOD_MS) { n.judged = true; n.score = 0; this.spawnJudgment('MISS', '#ff6a5a'); }
+    });
+    const cur = this.castNotes.find(n => !n.judged);
+    if (this.castRing) {
+      this.castRing.clear();
+      if (cur) {
+        const dt = cur.target - now;
+        const f = Phaser.Math.Clamp(dt / RHYTHM_APPROACH_MS, 0, 1);
+        const r = 36 + f * 124; // 160 → 36 as the beat lands
+        const close = dt < RHYTHM_GOOD_MS;
+        this.castRing.lineStyle(5, close ? 0xfff1a8 : 0x9fd2ff, 0.95).strokeCircle(0, 0, r);
+      }
+    }
+    if (this.castNotes.length > 0 && this.castNotes.every(n => n.judged)) this.finalizeRhythmCast();
+  }
+
+  /** A keypress/tap during the cast judges the current note by its beat offset. */
+  private handleRhythmHit(): void {
+    if (!this.castActive) return;
+    const cur = this.castNotes.find(n => !n.judged);
+    if (!cur) return;
+    const offset = this.time.now - cur.target;
+    if (offset < -(RHYTHM_GOOD_MS + 130)) return; // way too early — don't waste the note
+    const a = Math.abs(offset);
+    let score = 0, label = 'MISS', color = '#ff6a5a';
+    if (a <= RHYTHM_PERFECT_MS) { score = 1; label = 'PERFECT'; color = '#7ad17a'; }
+    else if (a <= RHYTHM_GOOD_MS) { score = 0.55; label = 'GOOD'; color = '#ffe07a'; }
+    cur.judged = true; cur.score = score;
+    this.spawnJudgment(label, color);
+    playSfx(score > 0 ? 'coins_gold' : 'building_destroyed', { volume: 0.38, throttleMs: 30, throttleKey: 'rhythm' });
+  }
+
+  private spawnJudgment(text: string, color: string, big = false): void {
+    if (!this.castGfx) return;
+    const t = this.add.text(this.castGfx.x, this.castGfx.y - 2, text, {
+      fontSize: big ? '24px' : '18px', color, fontFamily: 'monospace', fontStyle: 'bold', stroke: '#000', strokeThickness: 4,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(322);
+    this.tweens.add({ targets: t, y: t.y - 36, alpha: 0, duration: 540, ease: 'Cubic.Out', onComplete: () => t.destroy() });
+  }
+
+  private finalizeRhythmCast(): void {
+    const power = this.castNotes.reduce((s, n) => s + n.score, 0) / Math.max(1, this.castNotes.length);
+    this.lastCastPower = power;
+    this.client?.commanderRally(this.castLane, power);
+    const tier = power >= 0.95 ? 'PERFECT RALLY!' : power >= 0.6 ? 'Great Rally!' : power > 0 ? 'Rally' : 'Weak Rally…';
+    this.spawnJudgment(tier, power >= 0.6 ? '#ffd54a' : '#cfcfcf', true);
+    this.endRhythmCast();
+  }
+
+  private endRhythmCast(): void {
+    this.castActive = false;
+    this.castNotes = [];
+    if (this.castGfx) { this.castGfx.destroy(); this.castGfx = null; }
+    this.castRing = null; this.castComboText = null;
+  }
+
+  /** Beat-timed rally flourish on an army's centre (fired when the cast confirms),
+   *  its intensity scaled by how well the rhythm combo was hit. */
   private rallyPulse(x: number, y: number): void {
-    this.sparkleRing(x, y, '#ffd54a');
-    this.impactBurst(x, y, true);
-    this.shakeAt(x, y, 0.004, 160);
-    this.emitEvent('rally', '⚔ Rally!', { x, y, color: '#ffd54a', throttleMs: 400, throttleKey: 'rally' });
+    const p = this.lastCastPower;
+    this.sparkleRing(x, y, p >= 0.6 ? '#ffd54a' : '#b9c0c8');
+    this.impactBurst(x, y, p >= 0.6);
+    if (p >= 0.95) this.sparkleRing(x, y - 12, '#fff1a8');
+    this.shakeAt(x, y, 0.003 + 0.004 * p, 160);
+    this.emitEvent('rally', p >= 0.95 ? '⚔ PERFECT Rally!' : '⚔ Rally!', { x, y, color: '#ffd54a', throttleMs: 400, throttleKey: 'rally' });
     playSfx('coins_gold', { volume: 0.4, x, y, throttleMs: 300, throttleKey: 'rally' });
   }
 
@@ -1778,6 +1888,8 @@ export default class GameScene extends Phaser.Scene {
         }
         return; // swallow the click while placing
       }
+      // During a rhythm cast, a tap anywhere is a beat hit (not a selection).
+      if (this.castActive) { this.handleRhythmHit(); return; }
       const hits = this.input.hitTestPointer(p);
       const hitInteractive = hits.some(h => (h as any).input && (h as any).input.enabled);
       if (hitInteractive) return;
@@ -1790,7 +1902,8 @@ export default class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-ONE', () => this.issueArmyOrder(''));
     this.input.keyboard?.on('keydown-TWO', () => this.issueArmyOrder('hold'));
     this.input.keyboard?.on('keydown-THREE', () => this.issueArmyOrder('fallback'));
-    this.input.keyboard?.on('keydown-R', () => this.triggerRally());
+    this.input.keyboard?.on('keydown-R', () => this.castRally());
+    this.input.keyboard?.on('keydown-SPACE', () => { if (this.castActive) this.handleRhythmHit(); });
   }
 
   // ── Tower placement (free placement inside the city's influence) ──

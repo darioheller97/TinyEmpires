@@ -105,8 +105,8 @@ export class GameClient {
     this.room?.send('army_order', { lane, command });
   }
 
-  commanderRally(lane: string): void {
-    this.room?.send('commander_rally', { lane });
+  commanderRally(lane: string, power = 1): void {
+    this.room?.send('commander_rally', { lane, power });
   }
 
   buildStructure(cityId: string, type: string): void {
