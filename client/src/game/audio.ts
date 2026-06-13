@@ -9,6 +9,12 @@ let muted = false;
 let ambientStarted = false;
 const lastPlayed: Record<string, number> = {};
 
+// Dynamic battle layer: a second looping track over the calm bed, whose volume
+// rises with on-screen combat intensity and settles when the fighting stops.
+let battleSound: Phaser.Sound.BaseSound | null = null;
+let battleVol = 0;
+const BATTLE_MAX = 0.26;
+
 export function initAudio(s: Phaser.Scene): void {
   scene = s;
   s.sound.mute = muted;
@@ -23,6 +29,26 @@ export function startAmbient(): void {
   if (!key) return;
   ambientStarted = true;
   try { scene.sound.add(key, { loop: true, volume: 0.16 }).play(); } catch { /* ignore */ }
+  // Start the battle layer silent; setBattleIntensity() fades it in during fights.
+  if (scene.cache.audio.exists('sfx_music_battle')) {
+    try {
+      battleSound = scene.sound.add('sfx_music_battle', { loop: true, volume: 0 });
+      battleSound.play();
+    } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Drive the dynamic battle layer from combat intensity (0 calm … 1 pitched
+ * battle). Eased toward the target so it swells and settles smoothly; call it
+ * a couple of times a second.
+ */
+export function setBattleIntensity(t: number): void {
+  if (!battleSound) return;
+  const target = Math.max(0, Math.min(1, t)) * BATTLE_MAX;
+  battleVol += (target - battleVol) * 0.35;
+  if (battleVol < 0.002) battleVol = 0;
+  try { (battleSound as Phaser.Sound.WebAudioSound).setVolume(battleVol); } catch { /* ignore */ }
 }
 
 /**

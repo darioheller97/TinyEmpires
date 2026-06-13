@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { GameClient } from '../network/GameClient';
 import { preloadAssets, createAnims, unitSkin, factionOf } from './assets';
 import { buildTerrain, TerrainInfo, TILE, WATER, GRASS, ELEV } from './terrain';
-import { initAudio, startAmbient, playSfx } from './audio';
+import { initAudio, startAmbient, playSfx, setBattleIntensity } from './audio';
 
 interface NodeInfo { id: string; x: number; y: number; name: string; kind: 'city' | 'intersection' | 'lair'; }
 interface RoadData { id: string; fromId: string; toId: string; splinePoints: { x: number; y: number }[]; tilePath: { c: number; r: number }[]; }
@@ -125,6 +125,7 @@ export default class GameScene extends Phaser.Scene {
   private lastFogUpdate = 0;
   private cloudSprites: { sprite: Phaser.GameObjects.Sprite; tile: number }[] = [];
   private minimapRoads: { pts: { x: number; y: number }[] }[] | null = null;
+  private dayNight: Phaser.GameObjects.Rectangle | null = null; // slow ambient tint overlay
 
   // Juice bookkeeping: a startup grace window so the first state sync doesn't pop
   // every existing unit/building; phase + tech diffing for level-up/win flourishes;
@@ -162,6 +163,12 @@ export default class GameScene extends Phaser.Scene {
     // Screen-space overlay for off-screen battle arrows (camera-locked).
     this.battleArrows = this.add.graphics().setScrollFactor(0).setDepth(220);
     this.time.addEvent({ delay: 120, loop: true, callback: () => this.tickBattleArrows() });
+    // Swell the battle-music layer with how much fighting is going on.
+    this.time.addEvent({ delay: 500, loop: true, callback: () => this.updateBattleMusic() });
+    // Slow day/night ambient tint (screen-space, subtle). Sized large so it
+    // always covers the viewport regardless of window size.
+    this.dayNight = this.add.rectangle(-200, -200, 6000, 6000, 0x0b1834, 0)
+      .setOrigin(0).setScrollFactor(0).setDepth(58);
   }
 
   update(time: number): void {
@@ -174,6 +181,15 @@ export default class GameScene extends Phaser.Scene {
       this.beatClock += BEAT_MS;
       playSfx('beat_drum', { volume: 0.7, throttleMs: 400, throttleKey: 'beat' });
       this.swingCombatUnits(); // engaged units strike on the beat, with the drum
+    }
+
+    // Gentle day→dusk→night→dawn tint over a ~6-minute cycle. Starts at day.
+    if (this.dayNight) {
+      const phase = (time % 360000) / 360000;          // 0..1
+      const darkness = (1 - Math.cos(phase * Math.PI * 2)) / 2; // 0 day → 1 night
+      // Cool blue at night, a touch warmer (dusk/dawn) on the way there.
+      const colour = darkness > 0.5 ? 0x0b1834 : 0x241a2e;
+      this.dayNight.setFillStyle(colour, darkness * 0.3);
     }
 
     this.unitGfx.forEach(u => {
@@ -212,7 +228,7 @@ export default class GameScene extends Phaser.Scene {
         // going when nothing is marching). Phase-only — the play is up there.
         if (stepping) this.beatClock = time;
         // Kick up a little dust as columns march (some steps, on-screen only).
-        if (stepping && Math.random() < 0.18) this.marchPuff(c.x, c.y);
+        if (stepping && Math.random() < 0.26) this.marchPuff(c.x, c.y);
       }
       const from = c.getData('hopFrom') as { x: number; y: number };
       const to = c.getData('hopTo') as { x: number; y: number };
@@ -227,6 +243,14 @@ export default class GameScene extends Phaser.Scene {
       const he = h * h * (3 - 2 * h); // ease in/out within the hop so the landing settles
       c.x = from.x + (to.x - from.x) * he;
       c.y = from.y + (to.y - from.y) * he;
+      // Rank stagger: shift each unit a little perpendicular to its march so a
+      // column reads as 2–3 ranks abreast rather than one overlapping file.
+      const ro = (c.getData('rankOff') as number) || 0;
+      if (ro && moving) {
+        const dx = to.x - from.x, dy = to.y - from.y, l = Math.hypot(dx, dy) || 1;
+        c.x += (-dy / l) * ro;
+        c.y += (dx / l) * ro;
+      }
       u.sprite.y = moving ? -12 * Math.sin(h * Math.PI) : 0;
       c.setDepth(DEPTH_ENTITY + c.y * 0.01);
     });
@@ -894,6 +918,14 @@ export default class GameScene extends Phaser.Scene {
     const hpBar = this.makeBar(30, 9).setPosition(0, -34);
     hpBar.setVisible(false);
     container.add([sprite, hpBar]);
+    // Marching columns read as ranks, not a single file: each unit holds a small
+    // fixed perpendicular offset from the road centreline (applied in update()).
+    const h = Math.abs(this.hashStr(unit.id));
+    if (unit.type !== 'villager') container.setData('rankOff', ((h % 3) - 1) * 9);
+    // Every fifth combatant carries a faction pennant ("standard bearers").
+    if (unit.type !== 'villager' && h % 5 === 0) {
+      container.add(this.makePennant(this.playerColors.get(unit.ownerId)));
+    }
     container.setData('worldPos', pos);
     container.setData('ownerId', unit.ownerId);
     container.setData('isVillager', unit.type === 'villager');
@@ -1166,6 +1198,16 @@ export default class GameScene extends Phaser.Scene {
       onComplete: () => { if (spr.active) spr.x = baseX; } });
   }
 
+  // A small faction pennant on a pole, carried beside a unit's head.
+  private makePennant(colorHex: string | undefined): Phaser.GameObjects.Graphics {
+    const col = Phaser.Display.Color.HexStringToColor(colorHex || '#dddddd').color;
+    const g = this.add.graphics();
+    g.lineStyle(2, 0x2a1d0e, 1).lineBetween(9, -6, 9, -34); // pole
+    g.fillStyle(col, 1).fillTriangle(9, -34, 24, -30, 9, -25); // pennant
+    g.fillStyle(0x000000, 0.18).fillTriangle(9, -30, 24, -30, 9, -25); // fold shade
+    return g;
+  }
+
   // A tiny dust puff under a marching unit's feet (sells "army on the move").
   private marchPuff(x: number, y: number): void {
     const v = this.cameras.main.worldView;
@@ -1278,6 +1320,14 @@ export default class GameScene extends Phaser.Scene {
       g.fillTriangle(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
       g.strokeTriangle(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
     });
+  }
+
+  // Combat intensity → battle-music layer. Counts engaged units (any side) and
+  // ramps the layer in; a handful of duellists is mild, a big clash is loud.
+  private updateBattleMusic(): void {
+    let fighting = 0;
+    this.unitGfx.forEach(u => { if (u.container.getData('fighting') === true) fighting++; });
+    setBattleIntensity(Math.min(1, fighting / 6));
   }
 
   /** Shake the camera, but only when the event is on (or near) screen. */
