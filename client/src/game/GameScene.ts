@@ -159,11 +159,16 @@ export default class GameScene extends Phaser.Scene {
       const to = c.getData('hopTo') as { x: number; y: number };
       const dur = c.getData('hopDur') as number;
       const p = Phaser.Math.Clamp((time - (c.getData('hopStart') as number)) / dur, 0, 1);
-      const pe = p * p * (3 - 2 * p); // smoothstep ease so steps don't look mechanical
-      c.x = from.x + (to.x - from.x) * pe;
-      c.y = from.y + (to.y - from.y) * pe;
       const moving = Math.hypot(to.x - from.x, to.y - from.y) > 4;
-      u.sprite.y = moving ? -8 * Math.sin(p * Math.PI) : 0;
+      // A discrete hop, not a glide: do the whole jump in the first slice of the
+      // beat (quick arc to the next tile), then sit still until the next beat —
+      // so units pop tile-to-tile on the rhythm instead of drifting up and down.
+      const HOP = 0.42;
+      const h = Phaser.Math.Clamp(p / HOP, 0, 1);
+      const he = h * h * (3 - 2 * h); // ease in/out within the hop so the landing settles
+      c.x = from.x + (to.x - from.x) * he;
+      c.y = from.y + (to.y - from.y) * he;
+      u.sprite.y = moving ? -12 * Math.sin(h * Math.PI) : 0;
       c.setDepth(DEPTH_ENTITY + c.y * 0.01);
     });
   }

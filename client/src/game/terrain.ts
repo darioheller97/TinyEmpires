@@ -180,11 +180,17 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   }
   const FLAT = ['grass2', 'grass3', 'grass1'];
   const PLAT = ['grass1', 'grass3', 'grass2'];
+  // Large "biomes": one low-frequency hash over ~13-tile cells makes each grass
+  // shade cover a big contiguous swathe instead of a quilt of small patches. A
+  // couple-tile jitter on the sample coords wanders the region edges so the
+  // boundaries don't read as straight grid lines.
+  const BIOME = 13;
   const flatSheet = (c: number, r: number): string => {
-    const off = (island[r][c] + 1) * 7; // shift the noise per-island so they differ
-    const v = (hash2(Math.floor(c / 5) + off, Math.floor(r / 5))
-      + hash2(Math.floor((c + 2) / 4), Math.floor((r + 3) / 4) + off)) % 6;
-    return v < 4 ? FLAT[0] : v < 5 ? FLAT[1] : FLAT[2];
+    const off = (island[r][c] + 1) * 5;        // each island gets its own biome layout
+    const jx = (hash2(c, r * 3) % 5) - 2;       // ±2-tile edge wander
+    const jy = (hash2(c * 3, r) % 5) - 2;
+    const v = hash2(Math.floor((c + jx) / BIOME) + off, Math.floor((r + jy) / BIOME)) % 6;
+    return v < 3 ? FLAT[0] : v < 5 ? FLAT[1] : FLAT[2];
   };
 
   // ── Render base grass / sand ──
