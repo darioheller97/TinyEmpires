@@ -78,6 +78,7 @@ export const SHEETS: SheetDef[] = [
 export const IMAGES: { key: string; url: string }[] = [
   { key: 'water', url: `${A}/Terrain/Water/Water.png` },
   { key: 'water_bg', url: `${A2}/Water/WaterBg.png` },
+  { key: 'shadow', url: `${A2}/Water/Shadow.png` },
   { key: 'rock1', url: `${A2}/Rocks/Rock1.png` },
   { key: 'rock2', url: `${A2}/Rocks/Rock2.png` },
   { key: 'rock3', url: `${A2}/Rocks/Rock3.png` },
