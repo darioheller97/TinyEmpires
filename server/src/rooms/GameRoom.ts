@@ -86,6 +86,9 @@ export class GameRoom extends Room<GameState> {
   private reverseRoad = new Map<string, string>();
   // Tile slots per physical road (keyed by pairKey)
   private pairSlots = new Map<string, number>();
+  // Round-robin cursor per `${intersectionId}:${ownerId}` used to fan units
+  // out across exits when the player hasn't set a routing waypoint.
+  private spreadCursor = new Map<string, number>();
   // Plateau discs that block building placement and villager movement
   private elevations: { x: number; y: number; r: number }[] = [];
 
@@ -797,24 +800,31 @@ export class GameRoom extends Room<GameState> {
       }
     }
 
-    // Default: keep going as straight as possible, never wander into a lair
+    // No waypoint set: fan units out to cover as many roads as possible.
+    // Rank the exits straightest-first, then hand them out round-robin per
+    // player so consecutive units take different roads (the first carries
+    // straight on, the next peels off, …). Never wander into a lair.
     const nonLair = outgoing.filter(r => !this.state.lairs.has(r.toId));
     const candidates = nonLair.length > 0 ? nonLair : outgoing;
+    if (candidates.length <= 1) return candidates[0];
     const from = this.getNodePos(current.fromId);
     const here = this.getNodePos(nodeId);
-    if (!from || !here) return candidates[0];
-    const travelAngle = Math.atan2(here.y - from.y, here.x - from.x);
-    let best = candidates[0];
-    let bestDiff = Infinity;
-    candidates.forEach(r => {
-      const dest = this.getNodePos(r.toId);
-      if (!dest) return;
-      const a = Math.atan2(dest.y - here.y, dest.x - here.x);
-      let diff = Math.abs(a - travelAngle);
-      if (diff > Math.PI) diff = Math.PI * 2 - diff;
-      if (diff < bestDiff) { bestDiff = diff; best = r; }
-    });
-    return best;
+    const ranked = [...candidates];
+    if (from && here) {
+      const travelAngle = Math.atan2(here.y - from.y, here.x - from.x);
+      const deviation = (r: Road): number => {
+        const dest = this.getNodePos(r.toId);
+        if (!dest) return Math.PI;
+        let diff = Math.abs(Math.atan2(dest.y - here.y, dest.x - here.x) - travelAngle);
+        if (diff > Math.PI) diff = Math.PI * 2 - diff;
+        return diff;
+      };
+      ranked.sort((a, b) => deviation(a) - deviation(b));
+    }
+    const key = `${nodeId}:${unit.ownerId}`;
+    const cursor = this.spreadCursor.get(key) ?? 0;
+    this.spreadCursor.set(key, cursor + 1);
+    return ranked[cursor % ranked.length];
   }
 
   // ─── Combat ─────────────────────────────────────────────────

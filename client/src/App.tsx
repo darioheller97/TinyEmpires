@@ -35,6 +35,13 @@ const TECH_BTN: React.CSSProperties = {
   fontSize: '13px',
 };
 
+// A bare clickable icon — no button panel behind it, just the pack art.
+const ICON_BTN: React.CSSProperties = {
+  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+  width: 40, height: 40, imageRendering: 'pixelated', lineHeight: 0,
+  filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))',
+};
+
 const BUILD_OPTIONS: BuildOption[] = [
   { type: 'house', name: 'House (+5 pop)', cost: { wood: 25, food: 10, gold: 0 } },
   { type: 'barracks', name: 'Barracks', cost: { wood: 50, food: 20, gold: 10 } },
@@ -135,8 +142,12 @@ export default function App() {
           <button style={TECH_BTN} onClick={() => { playSfx('ui_click', { volume: 0.4 }); setTechTreeVisible(true); }}>
             📜 Tech Tree
           </button>
-          <button style={TECH_BTN} onClick={handleToggleMute} title={muted ? 'Unmute' : 'Mute'}>
-            {muted ? '🔇' : '🔊'}
+          <button
+            style={{ ...ICON_BTN, opacity: muted ? 0.4 : 1 }}
+            onClick={handleToggleMute}
+            title={muted ? 'Unmute' : 'Mute'}
+          >
+            <img src="/assets2/UI/icon_music.png" alt={muted ? 'Unmute' : 'Mute'} width={40} height={40} style={{ imageRendering: 'pixelated', display: 'block' }} />
           </button>
         </div>
         <div style={TOP_RIGHT}>
