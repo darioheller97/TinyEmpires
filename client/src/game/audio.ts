@@ -21,14 +21,30 @@ export function startAmbient(): void {
   try { scene.sound.add('sfx_ambient_loop', { loop: true, volume: 0.18 }).play(); } catch { /* ignore */ }
 }
 
-/** Play a one-shot effect by name (without the `sfx_` prefix). */
-export function playSfx(name: string, opts: { volume?: number; throttleMs?: number } = {}): void {
+/**
+ * Play a one-shot effect by name (without the `sfx_` prefix).
+ * Pass x/y to make it spatial: skipped when off-screen, quieter the further it
+ * is from the camera centre and the more the view is zoomed out. The throttle
+ * (per sound) stops rapid events from stacking into a buzz.
+ */
+export function playSfx(name: string, opts: { volume?: number; throttleMs?: number; x?: number; y?: number } = {}): void {
   if (muted || !scene || !scene.cache.audio.exists(`sfx_${name}`)) return;
   const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const prev = lastPlayed[name];
   if (opts.throttleMs && prev !== undefined && now - prev < opts.throttleMs) return;
+
+  let vol = opts.volume ?? 0.55;
+  if (opts.x !== undefined && opts.y !== undefined) {
+    const cam = scene.cameras.main;
+    const view = cam.worldView;
+    if (!Phaser.Geom.Rectangle.Contains(view, opts.x, opts.y)) return; // off-screen → silent
+    const dist = Math.hypot(opts.x - view.centerX, opts.y - view.centerY);
+    const maxD = Math.hypot(view.width, view.height) / 2 || 1;
+    vol *= Phaser.Math.Clamp(1 - (dist / maxD) * 0.6, 0.3, 1);   // edge falloff
+    vol *= Phaser.Math.Clamp(cam.zoom, 0.45, 1);                 // quieter zoomed out
+  }
   lastPlayed[name] = now;
-  try { scene.sound.play(`sfx_${name}`, { volume: opts.volume ?? 0.55 }); } catch { /* ignore */ }
+  try { scene.sound.play(`sfx_${name}`, { volume: vol }); } catch { /* ignore */ }
 }
 
 export function toggleMute(): boolean {

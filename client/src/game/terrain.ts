@@ -196,13 +196,15 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   // A cell is a cliff "cap" when it has a one-tile rocky drop on its south edge:
   //  • coast  — land sitting above water
   //  • platDrop — elevated ground sitting above lower grass
-  // The cap tile uses the elevated-grass bottom edge (the grass lip overhanging
-  // the cliff): LIP[0] left corner, LIP[1/2] middle, LIP[3] right corner —
-  // chosen by where the cliff run ends. The rocky face + a foot shadow render
-  // below it in a later pass.
-  const LIP = [32, 33, 34, 35];
-  const southCoast = (r: number, c: number) => isLand(r, c) && !isLand(r + 1, c);
-  const platDrop = (r: number, c: number) => isElev(r, c) && isLand(r + 1, c) && !isElev(r + 1, c);
+  // The cap uses the flat-grass bottom-edge tiles (grass with a clean dark
+  // fringe): CAP[0] left corner, CAP[1/2] middle, CAP[3] right corner — chosen
+  // by where the cliff run ends. (The elevated bottom-edge tiles 32–35 bake the
+  // cliff's lit rock-top into the grass, which read as a stray blue border when
+  // a plateau sits in open grass.) The rocky face below carries its own lip.
+  const CAP = [18, 19, 19, 20];
+  // Never start a cliff on a road, nor drop one onto a road tile below.
+  const southCoast = (r: number, c: number) => isLand(r, c) && grid[r][c] !== SAND && !isLand(r + 1, c);
+  const platDrop = (r: number, c: number) => isElev(r, c) && isLand(r + 1, c) && !isElev(r + 1, c) && !isSand(r + 1, c);
   const cliffHere = (r: number, c: number) => southCoast(r, c) || platDrop(r, c);
   const cliffPart = (r: number, c: number, edge: (r: number, c: number) => boolean): number => {
     if (!edge(r, c - 1)) return 0;   // left end
@@ -220,7 +222,7 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
       // Cliff caps get the grass-lip edge tile so the grass visibly overhangs
       // the rocky face; everything else autotiles against its own kind.
       const gFrame = cliffHere(r, c)
-        ? LIP[cliffPart(r, c, cliffHere)]
+        ? CAP[cliffPart(r, c, cliffHere)]
         : autotileFrame('grass', isLand(r - 1, c), isLand(r + 1, c), isLand(r, c + 1), isLand(r, c - 1));
       scene.add.image(x, y, sheet, gFrame).setOrigin(0).setDepth(grid[r][c] === ELEV ? 6 : 2);
       if (grid[r][c] === SAND) {

@@ -474,17 +474,17 @@ export default class GameScene extends Phaser.Scene {
     this.time.delayedCall(Math.random() * 2500, roam);
   }
 
-  // Drifting cloud blanket that hides the never-explored (state 0) regions.
+  // Cloud blanket that hides never-explored (state 0) regions — a sparse grid of
+  // big soft puffs (fewer, larger clouds read better than a swarm of small ones).
   private buildClouds(): void {
     if (!this.terrainInfo) return;
     const { cols, rows } = this.terrainInfo;
-    const step = 224;
-    let n = 0;
+    const step = 360;
     for (let y = step / 2; y < rows * TILE; y += step) {
       for (let x = step / 2; x < cols * TILE; x += step) {
-        const jx = x + (Math.random() - 0.5) * 80, jy = y + (Math.random() - 0.5) * 60;
+        const jx = x + (Math.random() - 0.5) * 120, jy = y + (Math.random() - 0.5) * 100;
         const s = this.add.sprite(jx, jy, `cloud${1 + Math.floor(Math.random() * 8)}`)
-          .setDepth(61).setScale(0.65 + Math.random() * 0.3).setAlpha(0.97);
+          .setDepth(61).setScale(1.0 + Math.random() * 0.5).setAlpha(0.97);
         if (Math.random() < 0.5) s.setFlipX(true);
         this.tweens.add({
           targets: s, x: jx + (Math.random() < 0.5 ? -1 : 1) * (10 + Math.random() * 14),
@@ -492,10 +492,31 @@ export default class GameScene extends Phaser.Scene {
         });
         const c = Math.floor(jx / TILE), r = Math.floor(jy / TILE);
         this.cloudSprites.push({ sprite: s, tile: r * cols + c });
-        n++;
       }
     }
-    void n;
+    this.buildDriftClouds();
+  }
+
+  // A handful of small clouds drift slowly across the whole map as ambience,
+  // floating above the world (not tied to the fog), looping off-screen to off.
+  private buildDriftClouds(): void {
+    if (!this.terrainInfo) return;
+    const { cols, rows } = this.terrainInfo;
+    const W = cols * TILE, H = rows * TILE;
+    for (let i = 0; i < 7; i++) {
+      const y = Math.random() * H;
+      const s = this.add.sprite(-200, y, `cloud${1 + Math.floor(Math.random() * 8)}`)
+        .setDepth(92).setScale(0.35 + Math.random() * 0.3).setAlpha(0.4);
+      const drift = (startX: number) => {
+        const yy = Math.random() * H;
+        s.setY(yy).setX(startX);
+        this.tweens.add({
+          targets: s, x: W + 220, duration: 60000 + Math.random() * 60000, ease: 'Linear',
+          onComplete: () => drift(-220),
+        });
+      };
+      drift(-220 - Math.random() * W); // stagger their entry across the map
+    }
   }
 
   // ── Fog of war ─────────────────────────────────────────────
@@ -596,7 +617,7 @@ export default class GameScene extends Phaser.Scene {
       if (bar) { bar.destroy(); store.delete(id); }
       return;
     }
-    if (!bar) { bar = this.makeBar(width, big ? 16 : 10).setDepth(big ? 46 : 45); store.set(id, bar); }
+    if (!bar) { bar = this.makeBar(width, big ? 18 : 12).setDepth(90); store.set(id, bar); }
     bar.setPosition(cx, y);
     this.setBarRatio(bar, hp / maxHp);
   }
@@ -628,7 +649,9 @@ export default class GameScene extends Phaser.Scene {
       const ratio = unit.health / (unit.maxHealth || 100);
       const prevRatio = existing.container.getData('hpRatio') as number | undefined;
       if (prevRatio !== undefined && ratio < prevRatio - 0.001) {
-        playSfx('sword_clash', { volume: 0.35, throttleMs: 160 }); // a hit landed somewhere
+        // One battle cue at a time: long throttle + spatial falloff so it never
+        // buzzes, goes quiet off to the side, and fades when zoomed out.
+        playSfx('sword_clash', { volume: 0.4, throttleMs: 650, x: existing.container.x, y: existing.container.y });
       }
       existing.container.setData('hpRatio', ratio);
       this.setBarRatio(existing.hpBar, ratio);
