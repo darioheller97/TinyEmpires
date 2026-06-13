@@ -5,3 +5,6 @@ build/
 *.log
 .DS_Store
 Thumbs.db
+
+# Raw asset pack download (curated copy lives in client/public/assets2)
+Tiny Swords (Free Pack)/

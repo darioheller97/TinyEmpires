@@ -229,3 +229,100 @@ export function generateMap(seed: number): GeneratedMap {
 
   return { seed, width, height, cities, intersections, lairs, edges, resources };
 }
+
+const TILE = 64;
+export interface GenElevation { x: number; y: number; r: number; }
+
+/**
+ * Land/water grid — a faithful port of the client's island generation in
+ * `client/src/game/terrain.ts` (must stay in sync so the server's elevation
+ * placement lands on what the client also draws as grass). `true` = land.
+ * Uses a FRESH mulberry32(seed) stream, exactly like the client.
+ */
+export function computeLandGrid(
+  seed: number, width: number, height: number,
+  cities: { x: number; y: number }[], lairs: { x: number; y: number }[],
+  resources: { x: number; y: number }[], roadSplines: { x: number; y: number }[][],
+): boolean[][] {
+  const rng = mulberry32(seed);
+  const cols = Math.ceil(width / TILE);
+  const rows = Math.ceil(height / TILE);
+  const grid: boolean[][] = Array.from({ length: rows }, () => Array(cols).fill(false));
+  const cc = (c: number, r: number) => ({ x: c * TILE + TILE / 2, y: r * TILE + TILE / 2 });
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const p = cc(c, r);
+      const nearCity = cities.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 420);
+      const nearLair = !nearCity && lairs.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 220);
+      const nearRes = !nearCity && !nearLair && resources.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 180);
+      const nearRoad = !nearCity && !nearLair && !nearRes && roadSplines.some(spline =>
+        spline.some((sp, i) => i % 4 === 0 && Math.hypot(sp.x - p.x, sp.y - p.y) < 150));
+      if (nearCity || nearLair || nearRes || nearRoad) grid[r][c] = true;
+    }
+  }
+  // Landmass blobs (identical rng usage/order to the client)
+  const landCells: [number, number][] = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (grid[r][c]) landCells.push([r, c]);
+  for (let k = 0; k < 40 && landCells.length > 0; k++) {
+    const [br, bc] = landCells[Math.floor(rng() * landCells.length)];
+    const cr = br + Math.floor((rng() - 0.5) * 8);
+    const ccc = bc + Math.floor((rng() - 0.5) * 8);
+    const rad = 1 + Math.floor(rng() * 3);
+    for (let r = Math.max(1, cr - rad); r <= Math.min(rows - 2, cr + rad); r++) {
+      for (let c = Math.max(1, ccc - rad); c <= Math.min(cols - 2, ccc + rad); c++) {
+        if ((r - cr) ** 2 + (c - ccc) ** 2 <= rad * rad && !grid[r][c]) grid[r][c] = true;
+      }
+    }
+  }
+  // Coastline dilation (rng only when touching, matching the client short-circuit)
+  const grown: [number, number][] = [];
+  for (let r = 1; r < rows - 1; r++) {
+    for (let c = 1; c < cols - 1; c++) {
+      if (grid[r][c]) continue;
+      const touching = grid[r - 1][c] || grid[r + 1][c] || grid[r][c - 1] || grid[r][c + 1];
+      if (touching && rng() < 0.45) grown.push([r, c]);
+    }
+  }
+  grown.forEach(([r, c]) => { grid[r][c] = true; });
+  return grid;
+}
+
+/** Place a handful of plateau discs on solid land, well clear of cities, roads,
+ *  resources and each other. Separate rng stream so it can't desync the client. */
+export function generateElevations(
+  seed: number, grid: boolean[][],
+  cities: { x: number; y: number }[], lairs: { x: number; y: number }[],
+  resources: { x: number; y: number }[], roadSplines: { x: number; y: number }[][],
+): GenElevation[] {
+  const rng = mulberry32((seed ^ 0x9e3779b9) >>> 0);
+  const rows = grid.length, cols = grid[0].length;
+  const isLand = (c: number, r: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c];
+  const minRoadDist = (p: { x: number; y: number }) => {
+    let m = Infinity;
+    roadSplines.forEach(s => s.forEach((sp, i) => { if (i % 2 === 0) m = Math.min(m, Math.hypot(sp.x - p.x, sp.y - p.y)); }));
+    return m;
+  };
+  // Require a solid land core around the centre; the client clips plateau edges
+  // to its own grass cells, so partial-disc overhang into water just renders smaller.
+  const coreLand = (c: number, r: number) => {
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) if (!isLand(c + dc, r + dr)) return false;
+    return true;
+  };
+  const out: GenElevation[] = [];
+  for (let a = 0; a < 900 && out.length < 16; a++) {
+    const rt = 1 + Math.floor(rng() * 2); // 1–2 tiles ⇒ 64–128px radius
+    const c = 2 + Math.floor(rng() * (cols - 4));
+    const r = 2 + Math.floor(rng() * (rows - 4));
+    const p = { x: c * TILE + TILE / 2, y: r * TILE + TILE / 2 };
+    if (!coreLand(c, r)) continue;
+    const rad = rt * TILE;
+    if (cities.some(ci => Math.hypot(ci.x - p.x, ci.y - p.y) < 240)) continue;
+    if (lairs.some(l => Math.hypot(l.x - p.x, l.y - p.y) < 200)) continue;
+    if (resources.some(re => Math.hypot(re.x - p.x, re.y - p.y) < rad + 50)) continue;
+    if (minRoadDist(p) < 95) continue; // sit beside roads, not on them
+    if (out.some(e => Math.hypot(e.x - p.x, e.y - p.y) < e.r + rad + 70)) continue;
+    out.push({ x: Math.round(p.x), y: Math.round(p.y), r: rad });
+  }
+  return out;
+}

@@ -18,25 +18,53 @@ export function factionOf(hex: string | undefined): FactionColor {
 interface SheetDef { key: string; url: string; frameWidth: number; frameHeight: number; }
 
 const A = 'assets';
+const A2 = 'assets2';
+
+// Remastered units: one spritesheet per (colour, class, state). Square frames
+// (192px; Lancer 320px). Black skins the PvE enemies.
+export const UNIT_COLORS = [...FACTION_COLORS, 'Black'] as const;
+type UnitState = 'idle' | 'walk' | 'attack' | 'mine';
+interface ClassDef { fw: number; frames: number; files: Partial<Record<UnitState, [string, number]>>; }
+export const UNIT_CLASSES: Record<string, ClassDef> = {
+  warrior: { fw: 192, frames: 8, files: { idle: ['Warrior/Warrior_Idle', 8], walk: ['Warrior/Warrior_Run', 6], attack: ['Warrior/Warrior_Attack1', 4] } },
+  archer:  { fw: 192, frames: 8, files: { idle: ['Archer/Archer_Idle', 6], walk: ['Archer/Archer_Run', 4], attack: ['Archer/Archer_Shoot', 8] } },
+  monk:    { fw: 192, frames: 11, files: { idle: ['Monk/Idle', 6], walk: ['Monk/Run', 4], attack: ['Monk/Heal', 11] } },
+  lancer:  { fw: 320, frames: 12, files: { idle: ['Lancer/Lancer_Idle', 12], walk: ['Lancer/Lancer_Run', 6], attack: ['Lancer/Lancer_Right_Attack', 3] } },
+  pawn:    { fw: 192, frames: 8, files: { idle: ['Pawn/Pawn_Idle', 8], walk: ['Pawn/Pawn_Run', 6], attack: ['Pawn/Pawn_Interact Axe', 6], mine: ['Pawn/Pawn_Interact Pickaxe', 6] } },
+};
 
 const troopSheets: SheetDef[] = [];
-FACTION_COLORS.forEach(c => {
-  troopSheets.push(
-    { key: `warrior_${c}`, url: `${A}/Factions/Knights/Troops/Warrior/${c}/Warrior_${c}.png`, frameWidth: 192, frameHeight: 192 },
-    // Note: the pack ships a misspelled "Archer_Purlple.png"
-    { key: `archer_${c}`, url: `${A}/Factions/Knights/Troops/Archer/${c}/Archer_${c === 'Purple' ? 'Purlple' : c}.png`, frameWidth: 192, frameHeight: 192 },
-    { key: `pawn_${c}`, url: `${A}/Factions/Knights/Troops/Pawn/${c}/Pawn_${c}.png`, frameWidth: 192, frameHeight: 192 },
-  );
+UNIT_COLORS.forEach(c => {
+  Object.entries(UNIT_CLASSES).forEach(([cls, def]) => {
+    (Object.entries(def.files) as [UnitState, [string, number]][]).forEach(([state, [file]]) => {
+      troopSheets.push({ key: `u_${c}_${cls}_${state}`, url: `${A2}/Units/${c}/${file}.png`, frameWidth: def.fw, frameHeight: def.fw });
+    });
+  });
 });
-troopSheets.push(
-  { key: 'torch', url: `${A}/Factions/Goblins/Troops/Torch/Red/Torch_Red.png`, frameWidth: 192, frameHeight: 192 },
-  // Barrel uses 128px frames in a 6x6 grid (unlike the other troops)
-  { key: 'barrel', url: `${A}/Factions/Goblins/Troops/Barrel/Purple/Barrel_Purple.png`, frameWidth: 128, frameHeight: 128 },
-);
 
 export const SHEETS: SheetDef[] = [
   ...troopSheets,
   { key: 'tiles', url: `${A}/Terrain/Ground/Tilemap_Flat.png`, frameWidth: 64, frameHeight: 64 },
+  // Remastered 9×6 grass/cliff tilesets (shade variants for less repetition)
+  { key: 'grass1', url: `${A2}/Tileset/Tilemap_color1.png`, frameWidth: 64, frameHeight: 64 },
+  { key: 'grass2', url: `${A2}/Tileset/Tilemap_color2.png`, frameWidth: 64, frameHeight: 64 },
+  { key: 'grass3', url: `${A2}/Tileset/Tilemap_color3.png`, frameWidth: 64, frameHeight: 64 },
+  // Remastered animated water edge + water rocks + bushes
+  { key: 'foam2', url: `${A2}/Water/Foam.png`, frameWidth: 192, frameHeight: 192 },
+  { key: 'wrock1', url: `${A2}/Water/WaterRocks_01.png`, frameWidth: 64, frameHeight: 64 },
+  { key: 'wrock2', url: `${A2}/Water/WaterRocks_02.png`, frameWidth: 64, frameHeight: 64 },
+  { key: 'wrock3', url: `${A2}/Water/WaterRocks_03.png`, frameWidth: 64, frameHeight: 64 },
+  { key: 'wrock4', url: `${A2}/Water/WaterRocks_04.png`, frameWidth: 64, frameHeight: 64 },
+  { key: 'bush1', url: `${A2}/Bushes/Bushe1.png`, frameWidth: 128, frameHeight: 128 },
+  { key: 'bush2', url: `${A2}/Bushes/Bushe2.png`, frameWidth: 128, frameHeight: 128 },
+  { key: 'bush3', url: `${A2}/Bushes/Bushe3.png`, frameWidth: 128, frameHeight: 128 },
+  { key: 'bush4', url: `${A2}/Bushes/Bushe4.png`, frameWidth: 128, frameHeight: 128 },
+  // Remastered tree species (8-frame sway). Tree1/2 are tall (256), Tree3/4 short (192)
+  { key: 'tree1', url: `${A2}/Trees/Tree1.png`, frameWidth: 192, frameHeight: 256 },
+  { key: 'tree2', url: `${A2}/Trees/Tree2.png`, frameWidth: 192, frameHeight: 256 },
+  { key: 'tree3', url: `${A2}/Trees/Tree3.png`, frameWidth: 192, frameHeight: 192 },
+  { key: 'tree4', url: `${A2}/Trees/Tree4.png`, frameWidth: 192, frameHeight: 192 },
+  { key: 'sheep2', url: `${A2}/Sheep/Sheep_Idle.png`, frameWidth: 128, frameHeight: 128 },
   { key: 'foam', url: `${A}/Terrain/Water/Foam/Foam.png`, frameWidth: 192, frameHeight: 192 },
   { key: 'rocks1', url: `${A}/Terrain/Water/Rocks/Rocks_01.png`, frameWidth: 128, frameHeight: 128 },
   { key: 'rocks2', url: `${A}/Terrain/Water/Rocks/Rocks_02.png`, frameWidth: 128, frameHeight: 128 },
@@ -49,6 +77,22 @@ export const SHEETS: SheetDef[] = [
 
 export const IMAGES: { key: string; url: string }[] = [
   { key: 'water', url: `${A}/Terrain/Water/Water.png` },
+  { key: 'water_bg', url: `${A2}/Water/WaterBg.png` },
+  { key: 'rock1', url: `${A2}/Rocks/Rock1.png` },
+  { key: 'rock2', url: `${A2}/Rocks/Rock2.png` },
+  { key: 'rock3', url: `${A2}/Rocks/Rock3.png` },
+  { key: 'rock4', url: `${A2}/Rocks/Rock4.png` },
+  { key: 'stump1', url: `${A2}/Trees/Stump1.png` },
+  { key: 'stump2', url: `${A2}/Trees/Stump2.png` },
+  { key: 'stump3', url: `${A2}/Trees/Stump3.png` },
+  { key: 'stump4', url: `${A2}/Trees/Stump4.png` },
+  // Gold gems (replace the old gold sacks)
+  { key: 'gem1', url: `${A2}/Gold/GoldStone1.png` },
+  { key: 'gem2', url: `${A2}/Gold/GoldStone2.png` },
+  { key: 'gem3', url: `${A2}/Gold/GoldStone3.png` },
+  { key: 'gem4', url: `${A2}/Gold/GoldStone4.png` },
+  { key: 'gem5', url: `${A2}/Gold/GoldStone5.png` },
+  { key: 'gem6', url: `${A2}/Gold/GoldStone6.png` },
   { key: 'elevation', url: `${A}/Terrain/Ground/Tilemap_Elevation.png` },
   { key: 'icon_close', url: `${A}/UI/Icons/Regular_01.png` },
   { key: 'goldmine_destroyed', url: `${A}/Resources/Gold Mine/GoldMine_Destroyed.png` },
@@ -67,22 +111,29 @@ FACTION_COLORS.forEach(c => {
     { key: `wood_tower_${c}`, url: `${A}/Factions/Goblins/Buildings/Wood_Tower/Wood_Tower_${c}.png` },
   );
 });
+// Remastered buildings (per faction colour) — distinct Castle/Barracks/Tower/Houses
+FACTION_COLORS.forEach(c => {
+  IMAGES.push(
+    { key: `castle2_${c}`, url: `${A2}/Buildings/${c}/Castle.png` },
+    { key: `barracks2_${c}`, url: `${A2}/Buildings/${c}/Barracks.png` },
+    { key: `tower2_${c}`, url: `${A2}/Buildings/${c}/Tower.png` },
+    { key: `archery_${c}`, url: `${A2}/Buildings/${c}/Archery.png` },
+    { key: `house2a_${c}`, url: `${A2}/Buildings/${c}/House1.png` },
+    { key: `house2b_${c}`, url: `${A2}/Buildings/${c}/House2.png` },
+    { key: `house2c_${c}`, url: `${A2}/Buildings/${c}/House3.png` },
+  );
+});
 for (let i = 1; i <= 18; i++) {
   IMAGES.push({ key: `deco_${i}`, url: `${A}/Deco/${String(i).padStart(2, '0')}.png` });
+}
+for (let i = 1; i <= 8; i++) {
+  IMAGES.push({ key: `cloud${i}`, url: `${A2}/Clouds/Clouds_0${i}.png` });
 }
 
 export function preloadAssets(scene: Phaser.Scene): void {
   SHEETS.forEach(s => scene.load.spritesheet(s.key, s.url, { frameWidth: s.frameWidth, frameHeight: s.frameHeight }));
   IMAGES.forEach(i => scene.load.image(i.key, i.url));
 }
-
-// Troop sheet layout: row 0 idle, row 1 walk, row 2 attack
-const TROOP_ANIM: Record<string, { cols: number; idle: number; walk: number; attack: number }> = {
-  warrior: { cols: 6, idle: 6, walk: 6, attack: 6 },
-  archer: { cols: 8, idle: 6, walk: 6, attack: 8 },
-  pawn: { cols: 6, idle: 6, walk: 6, attack: 6 },
-  torch: { cols: 7, idle: 7, walk: 6, attack: 6 },
-};
 
 function rowAnim(scene: Phaser.Scene, key: string, sheet: string, row: number, cols: number, count: number, frameRate: number, repeat = -1): void {
   scene.anims.create({
@@ -93,53 +144,69 @@ function rowAnim(scene: Phaser.Scene, key: string, sheet: string, row: number, c
   });
 }
 
+const STATE_FR: Record<UnitState, number> = { idle: 8, walk: 12, attack: 12, mine: 12 };
+
 export function createAnims(scene: Phaser.Scene): void {
-  // Troops (all palette variants share the layout)
-  Object.entries(TROOP_ANIM).forEach(([base, def]) => {
-    const sheets = base === 'torch' || base === 'barrel'
-      ? [base]
-      : FACTION_COLORS.map(c => `${base}_${c}`);
-    sheets.forEach(sheet => {
-      rowAnim(scene, `${sheet}_idle`, sheet, 0, def.cols, def.idle, 8);
-      rowAnim(scene, `${sheet}_walk`, sheet, 1, def.cols, def.walk, 10);
-      rowAnim(scene, `${sheet}_attack`, sheet, 2, def.cols, def.attack, 12);
-      // Pawns have a second work row (horizontal chop) used by villagers
-      if (base === 'pawn') rowAnim(scene, `${sheet}_chop`, sheet, 3, def.cols, 6, 12);
+  // Remastered units: one anim per (colour, class, state), each from its own sheet.
+  UNIT_COLORS.forEach(c => {
+    Object.entries(UNIT_CLASSES).forEach(([cls, def]) => {
+      (Object.entries(def.files) as [UnitState, [string, number]][]).forEach(([state, [, frames]]) => {
+        scene.anims.create({
+          key: `u_${c}_${cls}_${state}`,
+          frames: scene.anims.generateFrameNumbers(`u_${c}_${cls}_${state}`, { start: 0, end: frames - 1 }),
+          frameRate: STATE_FR[state], repeat: -1,
+        });
+      });
     });
   });
-  // Barrel goblin: 6-col 128px grid — row 2 idle (out), row 4 hop, row 5 lit fuse
-  scene.anims.create({ key: 'barrel_idle', frames: scene.anims.generateFrameNumbers('barrel', { start: 12, end: 12 }), frameRate: 1, repeat: -1 });
-  scene.anims.create({ key: 'barrel_walk', frames: scene.anims.generateFrameNumbers('barrel', { start: 24, end: 26 }), frameRate: 8, repeat: -1 });
-  scene.anims.create({ key: 'barrel_attack', frames: scene.anims.generateFrameNumbers('barrel', { start: 30, end: 32 }), frameRate: 10, repeat: -1 });
   rowAnim(scene, 'foam_anim', 'foam', 0, 8, 8, 8);
+  // Remastered animated water edge (16 frames) + water rocks + bushes
+  rowAnim(scene, 'foam2_anim', 'foam2', 0, 16, 16, 12);
+  for (let i = 1; i <= 4; i++) {
+    rowAnim(scene, `wrock${i}_anim`, `wrock${i}`, 0, 16, 16, 10);
+    rowAnim(scene, `bush${i}_anim`, `bush${i}`, 0, 8, 8, 6);
+  }
   rowAnim(scene, 'rocks1_anim', 'rocks1', 0, 8, 8, 6);
   rowAnim(scene, 'rocks2_anim', 'rocks2', 0, 8, 8, 6);
   rowAnim(scene, 'tree_anim', 'tree', 0, 4, 4, 5);
   rowAnim(scene, 'sheep_anim', 'sheep', 0, 6, 6, 7);
+  // Remastered trees (8-frame sway) + sheep idle (6 frames)
+  for (let i = 1; i <= 4; i++) rowAnim(scene, `tree${i}_anim`, `tree${i}`, 0, 8, 8, 6);
+  rowAnim(scene, 'sheep2_anim', 'sheep2', 0, 6, 6, 7);
   rowAnim(scene, 'fire_anim', 'fire', 0, 7, 7, 10);
   rowAnim(scene, 'explosion_anim', 'explosion', 0, 9, 9, 14, 0);
   rowAnim(scene, 'dead_anim', 'dead', 0, 7, 7, 10, 0);
 }
 
-/** Sprite sheet base + tint for a unit type. */
-export function unitSkin(type: string, ownerHex: string | undefined): { sheet: string; tint?: number } {
-  const c = factionOf(ownerHex);
+/** Unit class for a game unit type. */
+export function unitClass(type: string): string {
   switch (type) {
-    case 'villager': return { sheet: `pawn_${c}` };
-    case 'knight': return { sheet: `warrior_${c}` };
-    case 'archer': return { sheet: `archer_${c}` };
-    case 'lancer': return { sheet: `pawn_${c}` };
-    case 'monk': return { sheet: `pawn_${c}`, tint: 0xaaffd8 };
-    case 'goblin': return { sheet: 'torch' };
-    case 'spider': return { sheet: 'barrel' };
-    default: return { sheet: `pawn_${c}` };
+    case 'knight': return 'warrior';
+    case 'archer': return 'archer';
+    case 'lancer': return 'lancer';
+    case 'monk': return 'monk';
+    case 'goblin': return 'warrior'; // PvE enemy
+    case 'spider': return 'archer';  // PvE enemy
+    default: return 'pawn';          // villager
   }
 }
 
-// ── Autotiling for Tilemap_Flat (10x4 grid; grass at col 0, sand at col 5) ──
-// 3x3 rounded block + 1-wide strips at col/row 3 + isolated tile at (3,3).
+/** Remastered-unit anim base (`u_<colour>_<class>`) + on-screen scale.
+ *  PvE enemies (goblin/spider) use the Black faction. */
+export function unitSkin(type: string, ownerHex: string | undefined): { base: string; scale: number } {
+  const enemy = type === 'goblin' || type === 'spider';
+  const c = enemy ? 'Black' : factionOf(ownerHex);
+  const cls = unitClass(type);
+  return { base: `u_${c}_${cls}`, scale: cls === 'lancer' ? 0.42 : 0.62 };
+}
+
+// ── Autotiling ──
+// Both tilesets share the same 3×3-blob + 1-wide-strip + isolated-tile layout.
+//  • grass: remastered 9-wide tileset (`grass1/2/3`), blob at cols 0–3, rows 0–3.
+//  • sand:  old 10-wide Tilemap_Flat (`tiles`), sand block offset by +5.
+// n/s/e/w = "neighbour is the same terrain". Cliff-body frames (rows 4–5 of the
+// grass sheet) are addressed directly in terrain.ts, not through this function.
 export function autotileFrame(kind: 'grass' | 'sand', n: boolean, s: boolean, e: boolean, w: boolean): number {
-  const off = kind === 'grass' ? 0 : 5;
   let col: number, row: number;
   if (!e && !w) { col = 3; row = !n ? 0 : (!s ? 2 : 1); }
   else if (!n && !s) { row = 3; col = !w ? 0 : (!e ? 2 : 1); }
@@ -148,5 +215,10 @@ export function autotileFrame(kind: 'grass' | 'sand', n: boolean, s: boolean, e:
     row = !n ? 0 : (!s ? 2 : 1);
   }
   if (!n && !s && !e && !w) { col = 3; row = 3; }
-  return row * 10 + col + off;
+  return kind === 'grass' ? row * 9 + col : row * 10 + col + 5;
 }
+
+// Cliff-face frames in the 9-wide grass sheet (south-facing plateau edge):
+// upper rocky body row (41–44) over the lower body/base row (50–53).
+export const CLIFF_TOP = { left: 41, mid: 42, right: 43, single: 44 } as const;
+export const CLIFF_BOT = { left: 50, mid: 51, right: 52, single: 53 } as const;

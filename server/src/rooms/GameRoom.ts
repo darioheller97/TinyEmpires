@@ -8,7 +8,8 @@ import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS } from './sc
 import { ResourceNode, ResourceType, HARVEST_RATE } from './schema/ResourceNode';
 import { LairNode } from './schema/LairNode';
 import { UnitNode, TROOP_STATS, TROOP_TYPES, RPS_ADVANTAGE } from './schema/UnitNode';
-import { generateMap } from './MapGenerator';
+import { Elevation } from './schema/Elevation';
+import { generateMap, computeLandGrid, generateElevations } from './MapGenerator';
 
 // Matches the four Tiny Swords faction palettes: Blue, Red, Yellow, Purple
 const PLAYER_COLORS = ['#4488ff', '#ff4444', '#ffd700', '#aa44ff'];
@@ -74,6 +75,8 @@ export class GameRoom extends Room<GameState> {
   private reverseRoad = new Map<string, string>();
   // Tile slots per physical road (keyed by pairKey)
   private pairSlots = new Map<string, number>();
+  // Plateau discs that block building placement and villager movement
+  private elevations: { x: number; y: number; r: number }[] = [];
 
   onCreate(options: any): void {
     console.log('GameRoom created!');
@@ -125,6 +128,22 @@ export class GameRoom extends Room<GameState> {
     map.resources.forEach(r => {
       this.state.resources.set(r.id, new ResourceNode(r.id, r.type, r.x, r.y, r.amount));
     });
+
+    // ── Plateaus / cliffs: land grid → elevation discs (server-authoritative) ──
+    const roadSplines: { x: number; y: number }[][] = [];
+    map.edges.forEach(e => {
+      const aN = allNodes.find(n => n.id === e.a);
+      const bN = allNodes.find(n => n.id === e.b);
+      if (aN && bN) roadSplines.push(buildSplinePoints({ x: aN.x, y: aN.y }, e.via, { x: bN.x, y: bN.y }));
+    });
+    const land = computeLandGrid(seed, map.width, map.height, map.cities, map.lairs, map.resources, roadSplines);
+    this.elevations = generateElevations(seed, land, map.cities, map.lairs, map.resources, roadSplines);
+    this.elevations.forEach(e => this.state.elevations.push(new Elevation(e.x, e.y, e.r)));
+  }
+
+  /** True if the point sits on (or just inside the margin of) a plateau/cliff. */
+  private onElevation(x: number, y: number, margin = 0): boolean {
+    return this.elevations.some(e => Math.hypot(e.x - x, e.y - y) < e.r + margin);
   }
 
   private getNodePos(id: string): { x: number; y: number } | null {
@@ -148,12 +167,19 @@ export class GameRoom extends Room<GameState> {
       const cost = BUILDING_COSTS[bt];
       if (player.wood < cost.wood || player.food < cost.food || player.gold < cost.gold) return;
       player.wood -= cost.wood; player.food -= cost.food; player.gold -= cost.gold;
-      // Ring sits clear of the castle sprite (~90px tall above the node)
+      // Ring sits clear of the castle sprite (~90px tall above the node); skip
+      // any slot that would land on a plateau/cliff.
       const count = this.buildingsOf(city.id).length;
-      const angle = count * (Math.PI * 2 / 8) + Math.PI / 8;
       const radius = 130 + 30 * Math.floor(count / 8);
+      let bx = 0, by = 0;
+      for (let k = 0; k < 8; k++) {
+        const angle = (count + k) * (Math.PI * 2 / 8) + Math.PI / 8;
+        bx = city.x + Math.cos(angle) * radius;
+        by = city.y + Math.sin(angle) * radius;
+        if (!this.onElevation(bx, by, 24)) break;
+      }
       const bId = nextId('bld');
-      this.state.buildings.set(bId, new BuildingNode(bId, city.id, bt, city.x + Math.cos(angle) * radius, city.y + Math.sin(angle) * radius));
+      this.state.buildings.set(bId, new BuildingNode(bId, city.id, bt, bx, by));
     });
 
     this.onMessage('upgrade_town_hall', (client, msg: { cityId: string }) => {
@@ -471,8 +497,21 @@ export class GameRoom extends Room<GameState> {
     const d = Math.hypot(tx - unit.x, ty - unit.y);
     if (d < 1) return;
     const step = Math.min(speed, d);
-    unit.x += (tx - unit.x) / d * step;
-    unit.y += (ty - unit.y) / d * step;
+    let nx = unit.x + (tx - unit.x) / d * step;
+    let ny = unit.y + (ty - unit.y) / d * step;
+    // Slide around any plateau the straight step would walk into.
+    const e = this.elevations.find(el => Math.hypot(el.x - nx, el.y - ny) < el.r + 16);
+    if (e) {
+      const ax = nx - e.x, ay = ny - e.y, al = Math.hypot(ax, ay) || 1;
+      nx = e.x + ax / al * (e.r + 16);
+      ny = e.y + ay / al * (e.r + 16);
+      const tnx = -ay / al, tny = ax / al; // tangent
+      const s = Math.sign((tx - unit.x) * tnx + (ty - unit.y) * tny) || 1;
+      nx += tnx * s * step * 0.7;
+      ny += tny * s * step * 0.7;
+    }
+    unit.x = nx;
+    unit.y = ny;
   }
 
   // ─── Movement ───────────────────────────────────────────────

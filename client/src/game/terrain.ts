@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { autotileFrame } from './assets';
+import { autotileFrame, CLIFF_TOP, CLIFF_BOT } from './assets';
 
 // Procedural terrain rendering: water everywhere, an organic grass island
 // covering cities/roads/lairs, sand paths as roads, foam coastline, forests
@@ -13,17 +13,32 @@ export interface TerrainInput {
   lairs: { x: number; y: number }[];
   resources: { x: number; y: number }[];
   roadSplines: { x: number; y: number }[][]; // one per physical road
+  elevations: { x: number; y: number; r: number }[]; // server-authored plateaus
 }
 
 export interface TerrainInfo {
-  grid: number[][]; // [row][col]: 0 water, 1 grass, 2 sand
+  grid: number[][]; // [row][col]: 0 water, 1 grass, 2 sand, 3 elevated grass
   cols: number;
   rows: number;
   tile: number;
 }
 
 export const TILE = 64;
-export const WATER = 0, GRASS = 1, SAND = 2;
+export const WATER = 0, GRASS = 1, SAND = 2, ELEV = 3;
+
+// Pick a grass shade variant for a cell. Two overlapping low-frequency hashes
+// give soft, non-grid-aligned meadow patches; the two greens dominate and the
+// warmer shade is rare, so the field reads as varied rather than quilted.
+function hash2(a: number, b: number): number {
+  let h = (a * 73856093) ^ (b * 19349663);
+  h = Math.imul(h ^ (h >>> 13), 0x85ebca6b);
+  return (h >>> 0);
+}
+function grassSheet(c: number, r: number): string {
+  const v = (hash2(Math.floor(c / 5), Math.floor(r / 5))
+    + hash2(Math.floor((c + 2) / 4), Math.floor((r + 3) / 4))) % 6;
+  return v < 4 ? 'grass2' : v < 5 ? 'grass3' : 'grass1'; // ~67% / ~17% / ~17%
+}
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -104,17 +119,34 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
     }
   });
 
+  // ── Elevated plateaus (server-authored) bake into the grid as ELEV ──
+  input.elevations.forEach(e => {
+    const c0 = Math.floor((e.x - e.r) / TILE), c1 = Math.floor((e.x + e.r) / TILE);
+    const r0 = Math.floor((e.y - e.r) / TILE), r1 = Math.floor((e.y + e.r) / TILE);
+    for (let r = Math.max(0, r0); r <= Math.min(rows - 1, r1); r++) {
+      for (let c = Math.max(0, c0); c <= Math.min(cols - 1, c1); c++) {
+        const p = cellCenter(c, r);
+        // Only raise cells we already consider grass — never float on water/road
+        if (grid[r][c] === GRASS && Math.hypot(p.x - e.x, p.y - e.y) <= e.r) grid[r][c] = ELEV;
+      }
+    }
+  });
+
   // ── Render ──
   const isLand = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] !== WATER;
   const isSand = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] === SAND;
+  const isElev = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] === ELEV;
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const x = c * TILE, y = r * TILE;
-      scene.add.image(x, y, 'water').setOrigin(0).setDepth(0);
+      scene.add.image(x, y, 'water_bg').setOrigin(0).setDepth(0);
       if (grid[r][c] === WATER) continue;
       const gFrame = autotileFrame('grass', isLand(r - 1, c), isLand(r + 1, c), isLand(r, c + 1), isLand(r, c - 1));
-      scene.add.image(x, y, 'tiles', gFrame).setOrigin(0).setDepth(2);
+      // Plateau tops get a fixed deeper shade so they read as raised; flat grass
+      // uses the patchy shade variants.
+      const sheet = grid[r][c] === ELEV ? 'grass3' : grassSheet(c, r);
+      scene.add.image(x, y, sheet, gFrame).setOrigin(0).setDepth(grid[r][c] === ELEV ? 6 : 2);
       if (grid[r][c] === SAND) {
         const sFrame = autotileFrame('sand', isSand(r - 1, c), isSand(r + 1, c), isSand(r, c + 1), isSand(r, c - 1));
         scene.add.image(x, y, 'tiles', sFrame).setOrigin(0).setDepth(3);
@@ -122,69 +154,56 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
     }
   }
 
-  // ── Foam along the coastline (animated, under the grass) ──
+  // ── Cliff faces on the south edge of each plateau (2 tiles tall) ──
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (!isElev(r, c) || isElev(r + 1, c)) continue; // only the southern rim
+      const leftEnd = !isElev(r, c - 1), rightEnd = !isElev(r, c + 1);
+      const part = leftEnd && rightEnd ? 'single' : leftEnd ? 'left' : rightEnd ? 'right' : 'mid';
+      const x = c * TILE;
+      scene.add.image(x, (r + 1) * TILE, 'grass3', CLIFF_TOP[part]).setOrigin(0).setDepth(5 + (r + 1) * TILE * 0.01);
+      scene.add.image(x, (r + 2) * TILE, 'grass3', CLIFF_BOT[part]).setOrigin(0).setDepth(5 + (r + 2) * TILE * 0.01);
+    }
+  }
+
+  // ── Animated foam on every coast tile (ocean and lakes alike) ──
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       if (grid[r][c] === WATER) continue;
       const coastal = !isLand(r - 1, c) || !isLand(r + 1, c) || !isLand(r, c - 1) || !isLand(r, c + 1);
-      if (!coastal || rng() > 0.6) continue;
+      if (!coastal) continue;
       const p = cellCenter(c, r);
-      scene.add.sprite(p.x, p.y, 'foam').setDepth(1).play({ key: 'foam_anim', startFrame: Math.floor(rng() * 8) });
+      scene.add.sprite(p.x, p.y, 'foam2').setDepth(1).play({ key: 'foam2_anim', startFrame: Math.floor(rng() * 16) });
     }
   }
 
-  // ── Water rocks ──
-  for (let i = 0; i < 10; i++) {
+  // ── Animated water rocks dotted across open water ──
+  for (let i = 0; i < 26; i++) {
     const c = Math.floor(rng() * cols), r = Math.floor(rng() * rows);
     if (grid[r][c] !== WATER) continue;
     const near = isLand(r - 1, c) || isLand(r + 1, c) || isLand(r, c - 1) || isLand(r, c + 1);
     if (near) continue;
     const p = cellCenter(c, r);
-    scene.add.sprite(p.x, p.y, rng() < 0.5 ? 'rocks1' : 'rocks2')
-      .setDepth(1).play({ key: rng() < 0.5 ? 'rocks1_anim' : 'rocks2_anim', startFrame: Math.floor(rng() * 8) });
+    const k = 1 + Math.floor(rng() * 4);
+    scene.add.sprite(p.x, p.y, `wrock${k}`).setDepth(1).play({ key: `wrock${k}_anim`, startFrame: Math.floor(rng() * 16) });
   }
 
-  // ── Mountains / plateaus (complete stamps from the elevation sheet) ──
-  const stamps = [
-    { x: 0, y: 0, w: 192, h: 192 },    // big plateau
-    { x: 0, y: 256, w: 192, h: 128 },  // low plateau
-    { x: 192, y: 0, w: 64, h: 192 },   // rock pillar
-  ];
-  const placed: { x: number; y: number }[] = [];
-  const areaIsGrass = (px: number, py: number, w: number, h: number): boolean => {
-    for (let y = py; y < py + h; y += TILE) {
-      for (let x = px; x < px + w; x += TILE) {
-        const c = Math.floor(x / TILE), r = Math.floor(y / TILE);
-        if (r < 0 || r >= rows || c < 0 || c >= cols || grid[r][c] !== GRASS) return false;
-      }
-    }
-    return true;
-  };
-  for (let i = 0; i < 60 && placed.length < 9; i++) {
-    const stamp = stamps[Math.floor(rng() * stamps.length)];
-    const px = Math.floor(rng() * (cols - 4)) * TILE;
-    const py = Math.floor(rng() * (rows - 4)) * TILE;
-    const center = { x: px + stamp.w / 2, y: py + stamp.h / 2 };
-    if (!areaIsGrass(px, py, stamp.w, stamp.h)) continue;
-    if (input.cities.some(n => Math.hypot(n.x - center.x, n.y - center.y) < 320)) continue;
-    if (input.lairs.some(n => Math.hypot(n.x - center.x, n.y - center.y) < 220)) continue;
-    if (input.resources.some(n => Math.hypot(n.x - center.x, n.y - center.y) < 130)) continue;
-    if (placed.some(p => Math.hypot(p.x - center.x, p.y - center.y) < 320)) continue;
-    placed.push(center);
-    const img = scene.add.image(px - stamp.x, py - stamp.y, 'elevation').setOrigin(0);
-    img.setCrop(stamp.x, stamp.y, stamp.w, stamp.h);
-    img.setDepth(10 + (py + stamp.h) * 0.01);
-  }
-
-  // ── Scattered decorations (mushrooms, bushes, stones…) ──
+  // ── Scattered nature decorations (bushes, rocks, stumps) ──
   // Trees/sheep/gold come from server resource nodes, drawn by the scene.
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    if (grid[r][c] !== GRASS || rng() > 0.05) continue;
+    if ((grid[r][c] !== GRASS && grid[r][c] !== ELEV) || rng() > 0.05) continue;
     const p = cellCenter(c, r);
-    if (input.cities.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 180)) continue;
-    const idx = 1 + Math.floor(rng() * 18);
-    const d = scene.add.image(p.x + (rng() - 0.5) * 30, p.y + (rng() - 0.5) * 30, `deco_${idx}`).setDepth(4);
-    if (rng() < 0.25) d.setTint(0xf3cd7e); // autumn-tinted variety
+    if (input.cities.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 170)) continue;
+    const x = p.x + (rng() - 0.5) * 30, y = p.y + (rng() - 0.5) * 30;
+    const roll = rng();
+    if (roll < 0.55) {
+      const k = 1 + Math.floor(rng() * 4);
+      scene.add.sprite(x, y, `bush${k}`).setScale(0.5).setDepth(4).play({ key: `bush${k}_anim`, startFrame: Math.floor(rng() * 8) });
+    } else if (roll < 0.85) {
+      scene.add.image(x, y, `rock${1 + Math.floor(rng() * 4)}`).setDepth(4);
+    } else {
+      scene.add.image(x, y, `stump${1 + Math.floor(rng() * 4)}`).setScale(0.45).setOrigin(0.5, 0.7).setDepth(4);
+    }
   }
 
   return { grid, cols, rows, tile: TILE };

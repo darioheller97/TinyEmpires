@@ -51,7 +51,7 @@ interface UnitVisual {
   container: Phaser.GameObjects.Container;
   sprite: Phaser.GameObjects.Sprite;
   hpBar: Phaser.GameObjects.Rectangle;
-  sheet: string;
+  base: string;
   anim: string;
 }
 
@@ -90,6 +90,7 @@ export default class GameScene extends Phaser.Scene {
   private fogState: Uint8Array | null = null; // 0 unexplored, 1 explored, 2 visible
   private fogGfx: Phaser.GameObjects.Graphics | null = null;
   private lastFogUpdate = 0;
+  private cloudSprites: { sprite: Phaser.GameObjects.Sprite; tile: number }[] = [];
 
   constructor() { super({ key: 'GameScene' }); }
 
@@ -163,9 +164,11 @@ export default class GameScene extends Phaser.Scene {
       lairs: [...state.lairs.values()].map((l: any) => ({ x: l.x, y: l.y })),
       resources: [...state.resources.values()].map((r: any) => ({ x: r.x, y: r.y })),
       roadSplines: physicalSplines,
+      elevations: [...state.elevations].map((e: any) => ({ x: e.x, y: e.y, r: e.r })),
     });
     this.fogState = new Uint8Array(this.terrainInfo.cols * this.terrainInfo.rows);
     this.fogGfx = this.add.graphics().setDepth(60);
+    this.buildClouds();
 
     state.lairs.forEach((l: any, id: string) => {
       this.drawLair({ id, x: l.x, y: l.y, type: l.type, health: l.health, maxHealth: l.maxHealth });
@@ -304,8 +307,8 @@ export default class GameScene extends Phaser.Scene {
     // Influence is shown as a terrain-tile highlight on selection instead
     const influence = this.add.circle(0, 0, city.influenceRadius, 0x4488ff, 0);
     influence.setVisible(false);
-    const castle = this.add.image(0, 0, city.ownerId ? `castle_${factionOf(this.playerColors.get(city.ownerId))}` : 'castle_destroyed');
-    castle.setScale(0.55).setOrigin(0.5, 0.6);
+    const castle = this.add.image(0, 0, city.ownerId ? `castle2_${factionOf(this.playerColors.get(city.ownerId))}` : 'castle_destroyed');
+    castle.setScale(0.5).setOrigin(0.5, 0.62);
     const fire = this.add.sprite(-30, -40, 'fire').setScale(0.8).setVisible(false);
     fire.play('fire_anim');
     const fire2 = this.add.sprite(34, -20, 'fire').setScale(0.6).setVisible(false);
@@ -330,7 +333,7 @@ export default class GameScene extends Phaser.Scene {
   private refreshCityVisual(entry: { gfx: Phaser.GameObjects.Container; data: CityData }): void {
     const { gfx, data } = entry;
     const castle = gfx.getAt(1) as Phaser.GameObjects.Image;
-    const key = data.ownerId ? `castle_${factionOf(this.playerColors.get(data.ownerId))}` : 'castle_destroyed';
+    const key = data.ownerId ? `castle2_${factionOf(this.playerColors.get(data.ownerId))}` : 'castle_destroyed';
     if (castle.texture.key !== key) castle.setTexture(key);
     (gfx.getAt(5) as Phaser.GameObjects.Text).setText(`Lv.${data.townHallLevel}`);
     // Burning when badly damaged
@@ -338,6 +341,12 @@ export default class GameScene extends Phaser.Scene {
     (gfx.getAt(2) as Phaser.GameObjects.Sprite).setVisible(burning);
     (gfx.getAt(3) as Phaser.GameObjects.Sprite).setVisible(data.health < data.maxHealth * 0.4);
     this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 78, 60, data.health, data.maxHealth);
+  }
+
+  private hashStr(s: string): number {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return h;
   }
 
   // ── Buildings ─────────────────────────────────────────────
@@ -349,11 +358,13 @@ export default class GameScene extends Phaser.Scene {
     const color = factionOf(city ? this.playerColors.get(city.data.ownerId) : undefined);
 
     if (b.type === 'house') {
-      container.add(this.add.image(0, 0, `house_${color}`).setScale(0.6).setOrigin(0.5, 0.68));
+      // Pick one of three house variants deterministically from the id
+      const variant = ['house2a', 'house2b', 'house2c'][Math.abs(this.hashStr(b.id)) % 3];
+      container.add(this.add.image(0, 0, `${variant}_${color}`).setScale(0.55).setOrigin(0.5, 0.72));
     } else if (b.type === 'barracks') {
-      container.add(this.add.image(0, 0, `wood_tower_${color}`).setScale(0.55).setOrigin(0.5, 0.7));
+      container.add(this.add.image(0, 0, `barracks2_${color}`).setScale(0.5).setOrigin(0.5, 0.7));
     } else { // defense_tower
-      container.add(this.add.image(0, 0, `tower_${color}`).setScale(0.5).setOrigin(0.5, 0.72));
+      container.add(this.add.image(0, 0, `tower2_${color}`).setScale(0.5).setOrigin(0.5, 0.72));
     }
 
     container.setDepth(DEPTH_ENTITY + b.y * 0.01);
@@ -405,21 +416,21 @@ export default class GameScene extends Phaser.Scene {
     if (existing) { Object.assign(existing.data, { amount: r.amount, maxAmount: r.maxAmount }); return; }
     const container = this.add.container(r.x, r.y);
     if (r.type === 'tree') {
-      const t = this.add.sprite(0, 0, 'tree').setOrigin(0.5, 0.75);
-      t.play({ key: 'tree_anim', startFrame: (r.x + r.y) % 4 });
-      if ((r.x * 7 + r.y * 13) % 10 < 3) t.setTint(0xf3cd7e); // golden variety
-      else if ((r.x * 7 + r.y * 13) % 10 < 5) t.setTint(0xcfe8a0); // pale green
+      const species = 1 + ((r.x * 7 + r.y * 13) % 4); // deterministic species (incl. birch)
+      const t = this.add.sprite(0, 0, `tree${species}`).setScale(0.7).setOrigin(0.5, 0.82);
+      t.play({ key: `tree${species}_anim`, startFrame: (r.x + r.y) % 8 });
       container.add(t);
     } else if (r.type === 'sheep') {
-      const s = this.add.sprite(0, 0, 'sheep').setScale(0.7);
-      s.play({ key: 'sheep_anim', startFrame: (r.x + r.y) % 6 });
+      const s = this.add.sprite(0, 0, 'sheep2').setScale(0.7);
+      s.play({ key: 'sheep2_anim', startFrame: (r.x + r.y) % 6 });
       container.add(s);
     } else {
-      // Gold deposit: a cluster of nugget piles on the ground
+      // Gold deposit: a cluster of gemstones on the ground
+      const g = (n: number) => `gem${1 + ((r.x * 3 + r.y * 5 + n) % 6)}`;
       container.add([
-        this.add.image(0, 2, 'gold_pile').setScale(0.55),
-        this.add.image(-20, 12, 'gold_pile').setScale(0.38),
-        this.add.image(20, 14, 'gold_pile').setScale(0.32),
+        this.add.image(0, 2, g(0)).setScale(0.55),
+        this.add.image(-20, 12, g(1)).setScale(0.4),
+        this.add.image(20, 14, g(2)).setScale(0.34),
       ]);
     }
     container.setDepth(DEPTH_ENTITY + r.y * 0.01);
@@ -428,6 +439,30 @@ export default class GameScene extends Phaser.Scene {
     const entry = { gfx: container, data: { id: r.id, type: r.type, x: r.x, y: r.y, amount: r.amount, maxAmount: r.maxAmount } };
     container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('resource', r.id, names[r.type] || r.type, entry.data); });
     this.resourceGfx.set(r.id, entry);
+  }
+
+  // Drifting cloud blanket that hides the never-explored (state 0) regions.
+  private buildClouds(): void {
+    if (!this.terrainInfo) return;
+    const { cols, rows } = this.terrainInfo;
+    const step = 224;
+    let n = 0;
+    for (let y = step / 2; y < rows * TILE; y += step) {
+      for (let x = step / 2; x < cols * TILE; x += step) {
+        const jx = x + (Math.random() - 0.5) * 80, jy = y + (Math.random() - 0.5) * 60;
+        const s = this.add.sprite(jx, jy, `cloud${1 + Math.floor(Math.random() * 8)}`)
+          .setDepth(61).setScale(0.65 + Math.random() * 0.3).setAlpha(0.97);
+        if (Math.random() < 0.5) s.setFlipX(true);
+        this.tweens.add({
+          targets: s, x: jx + (Math.random() < 0.5 ? -1 : 1) * (10 + Math.random() * 14),
+          duration: 4000 + Math.random() * 4000, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+        });
+        const c = Math.floor(jx / TILE), r = Math.floor(jy / TILE);
+        this.cloudSprites.push({ sprite: s, tile: r * cols + c });
+        n++;
+      }
+    }
+    void n;
   }
 
   // ── Fog of war ─────────────────────────────────────────────
@@ -460,17 +495,19 @@ export default class GameScene extends Phaser.Scene {
       });
     }
 
-    // Draw fog overlay
+    // Draw fog overlay. Unexplored gets a soft cloudy base (clouds layer on top);
+    // explored-but-unwatched stays a dim veil.
     this.fogGfx.clear();
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const s = fog[r * cols + c];
         if (s === 2) continue;
-        // Unexplored is fully opaque — you don't know what's out there
-        this.fogGfx.fillStyle(s === 0 ? 0x0d1b2a : 0x06101c, s === 0 ? 1 : 0.4);
+        this.fogGfx.fillStyle(s === 0 ? 0x2a3a52 : 0x06101c, s === 0 ? 0.92 : 0.4);
         this.fogGfx.fillRect(c * TILE, r * TILE, TILE, TILE);
       }
     }
+    // Clouds only over never-explored tiles
+    this.cloudSprites.forEach(cl => cl.sprite.setVisible(fog[cl.tile] === 0));
 
     // Hide/show world entities by fog state
     const stateAt = (x: number, y: number): number => {
@@ -520,14 +557,14 @@ export default class GameScene extends Phaser.Scene {
     const existing = this.unitGfx.get(unit.id);
     let desiredAnim = unit.status === 'fighting' || unit.status === 'sieging'
       ? 'attack' : unit.status === 'defending' ? 'idle' : 'walk';
-    // Villagers at work: hammer swing for mining, horizontal chop for the rest
-    if (unit.type === 'villager' && desiredAnim === 'attack' && unit.resourceType !== 'gold') {
-      desiredAnim = 'chop';
+    // Villagers at work: pickaxe for gold, axe (the 'attack' clip) for wood/sheep
+    if (unit.type === 'villager' && desiredAnim === 'attack' && unit.resourceType === 'gold') {
+      desiredAnim = 'mine';
     }
 
     if (existing) {
       if (pos) existing.container.setData('worldPos', pos);
-      const animKey = `${existing.sheet}_${desiredAnim}`;
+      const animKey = `${existing.base}_${desiredAnim}`;
       if (existing.anim !== animKey) {
         existing.sprite.play(animKey);
         existing.anim = animKey;
@@ -543,9 +580,8 @@ export default class GameScene extends Phaser.Scene {
 
     const skin = unitSkin(unit.type, this.playerColors.get(unit.ownerId));
     const container = this.add.container(pos.x, pos.y);
-    const sprite = this.add.sprite(0, 0, skin.sheet).setScale(0.65);
-    if (skin.tint) sprite.setTint(skin.tint);
-    const animKey = `${skin.sheet}_${desiredAnim}`;
+    const sprite = this.add.sprite(0, 0, `${skin.base}_idle`).setScale(skin.scale);
+    const animKey = `${skin.base}_${desiredAnim}`;
     sprite.play(animKey);
     const hpBar = this.add.rectangle(0, -34, 22, 4, 0x44cc44, 0.9);
     hpBar.setVisible(false);
@@ -554,20 +590,18 @@ export default class GameScene extends Phaser.Scene {
     container.setData('ownerId', unit.ownerId);
     container.setData('isVillager', unit.type === 'villager');
     container.setDepth(DEPTH_ENTITY + pos.y * 0.01);
-    this.unitGfx.set(unit.id, { container, sprite, hpBar, sheet: skin.sheet, anim: animKey });
+    this.unitGfx.set(unit.id, { container, sprite, hpBar, base: skin.base, anim: animKey });
   }
 
   private removeUnitVisual(id: string, died: boolean): void {
     const u = this.unitGfx.get(id);
     if (!u) return;
     if (died) {
-      const isBarrel = u.sheet === 'barrel';
-      const fx = this.add.sprite(u.container.x, u.container.y, isBarrel ? 'explosion' : 'dead')
-        .setScale(isBarrel ? 0.7 : 0.6)
+      const fx = this.add.sprite(u.container.x, u.container.y, 'dead')
+        .setScale(0.6)
         .setDepth(DEPTH_ENTITY + u.container.y * 0.01 + 0.5);
-      fx.play(isBarrel ? 'explosion_anim' : 'dead_anim');
+      fx.play('dead_anim');
       fx.once('animationcomplete', () => {
-        if (isBarrel) { fx.destroy(); return; }
         this.tweens.add({ targets: fx, alpha: 0, delay: 1200, duration: 600, onComplete: () => fx.destroy() });
       });
     }

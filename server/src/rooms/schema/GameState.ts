@@ -1,4 +1,4 @@
-import { Schema, type, MapSchema } from '@colyseus/schema';
+import { Schema, type, MapSchema, ArraySchema } from '@colyseus/schema';
 import { Player } from './Player';
 import { CityNode } from './CityNode';
 import { IntersectionNode } from './IntersectionNode';
@@ -7,6 +7,7 @@ import { LairNode } from './LairNode';
 import { BuildingNode } from './BuildingNode';
 import { UnitNode } from './UnitNode';
 import { ResourceNode } from './ResourceNode';
+import { Elevation } from './Elevation';
 
 export class GameState extends Schema {
   @type({ map: Player })
@@ -32,6 +33,9 @@ export class GameState extends Schema {
 
   @type({ map: ResourceNode })
   resources = new MapSchema<ResourceNode>();
+
+  @type([Elevation])
+  elevations = new ArraySchema<Elevation>();
 
   @type('number')
   tick: number = 0;
