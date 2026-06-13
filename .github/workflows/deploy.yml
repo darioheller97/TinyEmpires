@@ -52,7 +52,9 @@ jobs:
           script: |
             cd ${{ secrets.DEPLOY_PATH }}
             git pull --ff-only
-            docker compose up -d --build
+            cd server && npm ci && npm run build
+            cd ../client && npm ci && npm run build
+            systemctl restart tinyempires
       - name: Skipped (no deploy secrets)
         if: env.DEPLOY_HOST == ''
         run: echo "DEPLOY_HOST secret not set — skipping deployment."
