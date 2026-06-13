@@ -71,6 +71,11 @@ export const BUTTON_RED: React.CSSProperties = {
   borderImage: `url(${U}/btn_red.png) 47 45 fill stretch`,
 };
 
+export const BUTTON_GREEN: React.CSSProperties = {
+  ...BUTTON,
+  borderImage: `url(${U}/btn_green.png) 47 45 fill stretch`,
+};
+
 export const BUTTON_DISABLED: React.CSSProperties = {
   ...BUTTON,
   borderImage: `url(${U}/btn_disabled.png) 47 45 fill stretch`,

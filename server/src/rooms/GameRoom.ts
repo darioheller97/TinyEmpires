@@ -7,7 +7,7 @@ import { Road } from './schema/Road';
 import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS } from './schema/BuildingNode';
 import { ResourceNode, ResourceType, HARVEST_RATE } from './schema/ResourceNode';
 import { LairNode } from './schema/LairNode';
-import { UnitNode, TROOP_STATS, TROOP_TYPES, RPS_ADVANTAGE } from './schema/UnitNode';
+import { UnitNode, TROOP_STATS, TROOP_TYPES } from './schema/UnitNode';
 import { Elevation } from './schema/Elevation';
 import { generateMap, computeLandGrid, generateElevations } from './MapGenerator';
 
@@ -33,6 +33,9 @@ const VILLAGER_SPEED = 4.5;          // px per tick, walking off-road
 const MOVE_BEAT_TICKS = 8;           // one step every 0.8s
 const VILLAGER_HARVEST_INTERVAL = 10; // ticks between harvest ticks
 const VILLAGER_SEARCH_RADIUS = 1400;  // from home city
+const VILLAGER_CARRY_CAP = 9;         // units hauled before a villager returns home
+const SHEEP_REGEN_INTERVAL_TICKS = 30; // ~3s between sheep flock growth
+const SHEEP_REGEN_AMOUNT = 2;          // food units regrown per interval
 
 /**
  * Rasterize a road spline into a 4-connected sequence of 64px tiles.
@@ -339,6 +342,7 @@ export class GameRoom extends Room<GameState> {
     this.processCombat();
     this.processSieges();
     if (this.state.tick % HEAL_INTERVAL_TICKS === 0) this.processMonkHealing();
+    if (this.state.tick % SHEEP_REGEN_INTERVAL_TICKS === 0) this.processSheepRegen();
     this.cleanupIdleGarrisons();
   }
 
@@ -448,6 +452,25 @@ export class GameRoom extends Room<GameState> {
       if (!player) { this.state.units.delete(unit.id); return; }
       const home = this.state.cities.get(unit.homeCityId);
 
+      let vSpeed = VILLAGER_SPEED;
+      if (player.hasTech('speed')) vSpeed *= 1.25;
+
+      // Full backpack (or nothing left to gather) → haul it home and bank it.
+      if (unit.carrying >= VILLAGER_CARRY_CAP || (unit.carrying > 0 && !this.hasGatherTarget(unit, home))) {
+        unit.status = 'marching';
+        if (!home) return;
+        const dh = Math.hypot(home.x - unit.x, home.y - unit.y);
+        if (dh > 44) { this.stepToward(unit, home.x, home.y + 50, vSpeed); return; }
+        const rate = HARVEST_RATE[unit.resourceType as ResourceType];
+        if (rate) {
+          player.wood += rate.wood * unit.carrying / 3;
+          player.food += rate.food * unit.carrying / 3;
+          player.gold += rate.gold * unit.carrying / 3;
+        }
+        unit.carrying = 0;
+        return;
+      }
+
       // (Re)acquire a target node
       let target = unit.targetResourceId ? this.state.resources.get(unit.targetResourceId) : undefined;
       if (!target || target.amount <= 0) {
@@ -463,11 +486,8 @@ export class GameRoom extends Room<GameState> {
         if (best) { unit.targetResourceId = best.id; target = best; }
       }
 
-      // Villagers walk smoothly (no marching beat); Paved Roads speeds them up
-      let vSpeed = VILLAGER_SPEED;
-      if (player.hasTech('speed')) vSpeed *= 1.25;
       if (!target) {
-        // Nothing left to gather: drift home and wait
+        // Nothing to gather and empty-handed: drift home and wait
         unit.status = 'marching';
         if (home) this.stepToward(unit, home.x, home.y + 50, vSpeed);
         return;
@@ -480,19 +500,37 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
-      // Working the node
+      // Working the node: load the backpack (banked later, on the trip home)
       unit.status = 'fighting'; // client plays the work/swing animation
       if (this.state.tick % VILLAGER_HARVEST_INTERVAL === 0) {
-        const rate = HARVEST_RATE[target.type as ResourceType];
-        const take = Math.min(3, target.amount);
-        player.wood += rate.wood * take / 3;
-        player.food += rate.food * take / 3;
-        player.gold += rate.gold * take / 3;
+        const take = Math.min(3, target.amount, VILLAGER_CARRY_CAP - unit.carrying);
+        unit.carrying += take;
         target.amount -= take;
-        if (target.amount <= 0) {
+        // Sheep flocks regrow (handled by processSheepRegen); trees/gold deplete.
+        if (target.amount <= 0 && target.type !== 'sheep') {
           this.state.resources.delete(target.id);
           unit.targetResourceId = '';
         }
+      }
+    });
+  }
+
+  /** Any reachable, non-empty node of this villager's resource still left? */
+  private hasGatherTarget(unit: UnitNode, home: CityNode | undefined): boolean {
+    let found = false;
+    this.state.resources.forEach(r => {
+      if (found || r.type !== unit.resourceType || r.amount <= 0) return;
+      if (home && Math.hypot(r.x - home.x, r.y - home.y) > VILLAGER_SEARCH_RADIUS) return;
+      found = true;
+    });
+    return found;
+  }
+
+  /** Sheep flocks slowly regrow so food never runs out permanently. */
+  private processSheepRegen(): void {
+    this.state.resources.forEach(r => {
+      if (r.type === 'sheep' && r.amount < r.maxAmount) {
+        r.amount = Math.min(r.maxAmount, r.amount + SHEEP_REGEN_AMOUNT);
       }
     });
   }
@@ -724,28 +762,32 @@ export class GameRoom extends Room<GameState> {
     groups.forEach((units, key) => {
       if (units.length < 2) return;
       const atNode = key.startsWith('node:');
-      // Units on adjacent road tiles engage
-      const engageRange = atNode ? 0 : 1.2 / (this.pairSlots.get(key.slice(5)) || 12);
+      const slots = this.pairSlots.get(key.slice(5)) || 12;
       for (let i = 0; i < units.length; i++) {
         for (let j = i + 1; j < units.length; j++) {
           const a = units[i], b = units[j];
           if (a.ownerId === b.ownerId) continue;
           if (dead.has(a.id) || dead.has(b.id)) continue;
-          if (!atNode && Math.abs(this.pairPos(a) - this.pairPos(b)) > engageRange) continue;
 
-          // Engaged: both stop (unless parked at a node already)
-          if (!a.atNodeId) a.status = 'fighting';
-          if (!b.atNodeId) b.status = 'fighting';
+          // Tile gap along the shared road (0 when both parked at a node).
+          const tileGap = atNode ? 0 : Math.abs(this.pairPos(a) - this.pairPos(b)) * slots;
+          const aReach = (TROOP_STATS[a.type]?.rangeTiles ?? 1) + 0.25;
+          const bReach = (TROOP_STATS[b.type]?.rangeTiles ?? 1) + 0.25;
+          const aCanHit = tileGap <= aReach;
+          const bCanHit = tileGap <= bReach;
+          if (!aCanHit && !bCanHit) continue; // still out of range — keep marching to close
 
           const aReady = this.state.tick - a.lastCombatTick >= COMBAT_COOLDOWN_TICKS;
           const bReady = this.state.tick - b.lastCombatTick >= COMBAT_COOLDOWN_TICKS;
-          if (aReady) {
-            b.health = Math.max(0, b.health - this.calcDamage(a, b));
-            a.lastCombatTick = this.state.tick;
+          // A unit only stops to fight when it can actually strike; one that's
+          // being shot from afar keeps advancing until it's in melee range.
+          if (aCanHit) {
+            if (!a.atNodeId) a.status = 'fighting';
+            if (aReady) { b.health = Math.max(0, b.health - this.calcDamage(a, b)); a.lastCombatTick = this.state.tick; }
           }
-          if (bReady) {
-            a.health = Math.max(0, a.health - this.calcDamage(b, a));
-            b.lastCombatTick = this.state.tick;
+          if (bCanHit) {
+            if (!b.atNodeId) b.status = 'fighting';
+            if (bReady) { a.health = Math.max(0, a.health - this.calcDamage(b, a)); b.lastCombatTick = this.state.tick; }
           }
           if (a.health <= 0) dead.add(a.id);
           if (b.health <= 0) dead.add(b.id);
@@ -762,15 +804,11 @@ export class GameRoom extends Room<GameState> {
 
   private calcDamage(attacker: UnitNode, defender: UnitNode): number {
     const aStats = TROOP_STATS[attacker.type];
+    const dStats = TROOP_STATS[defender.type];
     if (!aStats) return 0;
     let base = aStats.attack;
 
-    // Rock-paper-scissors (players only)
-    if (!attacker.isPvE && !defender.isPvE) {
-      if (RPS_ADVANTAGE[attacker.type] === defender.type) base *= 2;
-      else if (RPS_ADVANTAGE[defender.type] === attacker.type) base *= 0.5;
-    }
-
+    // Unit-damage techs (players only)
     if (!attacker.isPvE) {
       const owner = this.state.players.get(attacker.ownerId);
       if (owner) {
@@ -780,10 +818,15 @@ export class GameRoom extends Room<GameState> {
       }
     }
 
+    // Armour soaks damage; the attacker's penetration ignores a fraction of it.
+    // Knights (high armour) shrug off arrows; lancers (high pen) punch through.
+    const armor = (dStats?.armor ?? 0) * (1 - aStats.armorPen);
+    let dmg = base - armor;
+
     // Anti-snowball: attackers weaken with distance, defenders near home resist
-    base *= Math.max(0.5, 1.0 - attacker.distanceTraveled * 0.12);
-    if (defender.status === 'defending' || defender.distanceTraveled < 0.5) base *= 0.8;
-    return Math.max(1, Math.floor(base));
+    dmg *= Math.max(0.5, 1.0 - attacker.distanceTraveled * 0.10);
+    if (defender.status === 'defending' || defender.distanceTraveled < 0.5) dmg *= 0.85;
+    return Math.max(1, Math.floor(dmg));
   }
 
   // ─── Sieges ─────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import React from 'react';
-import { PANEL, RIBBON, BUTTON, BUTTON_DISABLED, BUTTON_RED, ICONS, RES_ICON } from './skin';
+import { PANEL, RIBBON, BUTTON, BUTTON_DISABLED, BUTTON_RED, BUTTON_GREEN, ICONS, RES_ICON } from './skin';
 
 export interface TechOption {
   id: string;
@@ -26,11 +26,11 @@ const OVERLAY: React.CSSProperties = {
 
 const MODAL: React.CSSProperties = {
   ...PANEL,
-  minWidth: '380px',
-  maxWidth: '520px',
-  maxHeight: '80vh',
+  minWidth: '480px',
+  maxWidth: '640px',
+  maxHeight: '86vh',
   overflowY: 'auto',
-  fontSize: '12px',
+  fontSize: '14px',
 };
 
 const TECH_BTN: React.CSSProperties = {
@@ -40,14 +40,15 @@ const TECH_BTN: React.CSSProperties = {
   alignItems: 'center',
   width: '100%',
   textAlign: 'left',
-  fontSize: '12px',
-  marginBottom: '3px',
+  fontSize: '15px',
+  marginBottom: '6px',
+  minHeight: '34px',
 };
 
 const TECH_BTN_OFF: React.CSSProperties = { ...TECH_BTN, ...BUTTON_DISABLED, width: '100%' };
-const TECH_BTN_DONE: React.CSSProperties = { ...TECH_BTN, ...BUTTON_RED, width: '100%', cursor: 'default' };
+const TECH_BTN_DONE: React.CSSProperties = { ...TECH_BTN, ...BUTTON_GREEN, width: '100%', cursor: 'default' };
 
-const SMALL_ICON: React.CSSProperties = { ...RES_ICON, width: 18, height: 18 };
+const SMALL_ICON: React.CSSProperties = { ...RES_ICON, width: 20, height: 20 };
 
 export default function TechTreeModal({ visible, researched, gold, techs, onResearch, onClose }: Props) {
   if (!visible) return null;
@@ -64,7 +65,7 @@ export default function TechTreeModal({ visible, researched, gold, techs, onRese
 
         {categories.map(cat => (
           <div key={cat}>
-            <div style={{ fontSize: '13px', margin: '8px 0 4px' }}>
+            <div style={{ fontSize: '16px', margin: '10px 0 6px' }}>
               {cat === 'unit' ? '⚔️ Unit Upgrades' : '🏗️ Economy'}
             </div>
             {techs.filter(t => t.category === cat).map(tech => {
@@ -79,7 +80,7 @@ export default function TechTreeModal({ visible, researched, gold, techs, onRese
                 >
                   <span>
                     <span style={{ display: 'block' }}>{tech.name}</span>
-                    <span style={{ display: 'block', fontSize: '10px', opacity: 0.8, fontWeight: 400 }}>{tech.desc}</span>
+                    <span style={{ display: 'block', fontSize: '12px', opacity: 0.85, fontWeight: 400 }}>{tech.desc}</span>
                   </span>
                   <span style={{ whiteSpace: 'nowrap' }}>
                     {isResearched ? '✓' : <><img src={ICONS.gold} style={SMALL_ICON} alt="g" />{tech.cost}</>}

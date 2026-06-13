@@ -12,7 +12,8 @@ export interface TerrainInput {
   cities: { x: number; y: number }[];
   lairs: { x: number; y: number }[];
   resources: { x: number; y: number }[];
-  roadSplines: { x: number; y: number }[][]; // one per physical road
+  roadSplines: { x: number; y: number }[][]; // one per physical road (island shaping)
+  roadTilePaths: { c: number; r: number }[][]; // 4-connected single-width path units walk (sand)
   elevations: { x: number; y: number; r: number }[]; // server-authored plateaus
 }
 
@@ -113,21 +114,14 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
     for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) ensureLand(c0 + dc, r0 + dr);
   });
 
-  // ── Sand roads along splines (kept 4-connected so tiles join up) ──
+  // ── Sand roads ──
+  // Paint exactly the 4-connected single-tile path the server's units walk, so
+  // roads are always one tile wide (flooring raw spline samples could land in
+  // two rows on a near-axis run and render a 2-wide band).
   const markSand = (r: number, c: number) => {
     if (r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] !== WATER) grid[r][c] = SAND;
   };
-  input.roadSplines.forEach(spline => {
-    let prev: { r: number; c: number } | null = null;
-    spline.forEach(sp => {
-      const c = Math.floor(sp.x / TILE), r = Math.floor(sp.y / TILE);
-      markSand(r, c);
-      // Diagonal step ⇒ bridge with an orthogonal neighbor, otherwise the
-      // autotiler draws two disconnected path stubs
-      if (prev && prev.r !== r && prev.c !== c) markSand(prev.r, c);
-      prev = { r, c };
-    });
-  });
+  input.roadTilePaths.forEach(path => path.forEach(cell => markSand(cell.r, cell.c)));
   // City plazas
   input.cities.forEach(n => {
     const c0 = Math.floor(n.x / TILE), r0 = Math.floor(n.y / TILE);

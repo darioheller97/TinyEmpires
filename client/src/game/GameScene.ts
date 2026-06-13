@@ -151,13 +151,16 @@ export default class GameScene extends Phaser.Scene {
 
     const drawnPairs = new Set<string>();
     const physicalSplines: { x: number; y: number }[][] = [];
+    const physicalTilePaths: { c: number; r: number }[][] = [];
     state.roads.forEach((r: any, id: string) => {
       const pts = r.splinePoints.map((p: any) => ({ x: p.x, y: p.y }));
-      this.roadsById.set(id, { id, fromId: r.fromId, toId: r.toId, splinePoints: pts, tilePath: computeTilePath(pts) });
+      const tilePath = computeTilePath(pts);
+      this.roadsById.set(id, { id, fromId: r.fromId, toId: r.toId, splinePoints: pts, tilePath });
       const pairKey = [r.fromId, r.toId].sort().join('|');
       if (!drawnPairs.has(pairKey)) {
         drawnPairs.add(pairKey);
         physicalSplines.push(pts);
+        physicalTilePaths.push(tilePath);
       }
     });
 
@@ -169,6 +172,7 @@ export default class GameScene extends Phaser.Scene {
       lairs: [...state.lairs.values()].map((l: any) => ({ x: l.x, y: l.y })),
       resources: [...state.resources.values()].map((r: any) => ({ x: r.x, y: r.y })),
       roadSplines: physicalSplines,
+      roadTilePaths: physicalTilePaths,
       elevations: [...state.elevations].map((e: any) => ({ x: e.x, y: e.y, r: e.r })),
     });
     this.fogState = new Uint8Array(this.terrainInfo.cols * this.terrainInfo.rows);
@@ -203,19 +207,22 @@ export default class GameScene extends Phaser.Scene {
   // ── Intersections + routing ───────────────────────────────
   private drawIntersection(node: NodeInfo): void {
     const container = this.add.container(node.x, node.y);
-    const circle = this.add.circle(0, 0, 16, 0xb8945e, 0.85);
-    circle.setStrokeStyle(2, 0x6b4f2e, 0.9);
-    const post = this.add.image(0, -8, 'deco_16').setScale(0.8); // signpost-ish deco
-    const label = this.add.text(0, -34, node.name, {
+    // A clickable crossway signpost — tap it to choose which way troops turn.
+    const plate = this.add.circle(0, 0, 17, 0xb8945e, 0.95);
+    plate.setStrokeStyle(3, 0x6b4f2e, 1);
+    const sign = this.add.text(0, 0, '🔀', { fontSize: '20px' }).setOrigin(0.5);
+    const label = this.add.text(0, -32, node.name, {
       fontSize: '11px', color: '#ffd700', fontFamily: 'monospace',
       stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5);
-    container.add([circle, post, label]);
+    container.add([plate, sign, label]);
     container.setDepth(DEPTH_ENTITY + node.y * 0.01);
     container.setInteractive(new Phaser.Geom.Circle(0, 0, 24), Phaser.Geom.Circle.Contains);
     container.on('pointerup', () => { if (!this.dragMoved) this.onIntersectionClick(node); });
-    container.on('pointerover', () => container.setScale(1.15));
+    container.on('pointerover', () => container.setScale(1.18));
     container.on('pointerout', () => container.setScale(1));
+    // A gentle idle bob hints that the sign is interactive.
+    this.tweens.add({ targets: sign, y: { from: 0, to: -3 }, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
   }
 
   private onIntersectionClick(node: NodeInfo): void {
