@@ -114,6 +114,7 @@ export const IMAGES: { key: string; url: string }[] = [
   { key: 'elevation', url: `${A}/Terrain/Ground/Tilemap_Elevation.png` },
   { key: 'icon_close', url: `${A}/UI/Icons/Regular_01.png` },
   { key: 'goldmine_destroyed', url: `${A}/Resources/Gold Mine/GoldMine_Destroyed.png` },
+  { key: 'goldmine_active', url: `${A}/Resources/Gold Mine/GoldMine_Active.png` },
   { key: 'gold_pile', url: `${A}/Resources/Resources/G_Idle.png` },
   { key: 'goblin_house', url: `${A}/Factions/Goblins/Buildings/Wood_House/Goblin_House.png` },
   { key: 'castle_destroyed', url: `${A}/Factions/Knights/Buildings/Castle/Castle_Destroyed.png` },

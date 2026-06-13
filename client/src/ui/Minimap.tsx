@@ -99,6 +99,20 @@ export default function Minimap({ data, pings, onNavigate }: Props) {
       ctx.strokeRect(c.x * scaleX - 3, c.y * scaleY - 3, 6, 6);
     });
 
+    // Contested camps: diamonds coloured by holder; an orange ring while fought over.
+    (data.objectives || []).forEach(o => {
+      if (fogAt(o.x, o.y) === 0) return;
+      const px = o.x * scaleX, py = o.y * scaleY, r = 3.4;
+      ctx.beginPath();
+      ctx.moveTo(px, py - r); ctx.lineTo(px + r, py); ctx.lineTo(px, py + r); ctx.lineTo(px - r, py);
+      ctx.closePath();
+      ctx.fillStyle = o.color;
+      ctx.fill();
+      ctx.lineWidth = o.contested ? 1.6 : 1;
+      ctx.strokeStyle = o.contested ? '#ffa53a' : '#000';
+      ctx.stroke();
+    });
+
     // Fog veil: build it at tile resolution offscreen, then stretch over the map.
     // Unexplored = opaque dark, explored-but-unwatched = dim, visible = clear.
     if (fog && cols > 0 && rows > 0) {

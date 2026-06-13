@@ -40,6 +40,7 @@ check('match started after ready', host.state.phase === 'active', `phase=${host.
 const h = host.state.players.get(host.sessionId), g = host.state.players.get(guest.sessionId);
 check('both players got a capital', !!h?.connectedCityId && !!g?.connectedCityId && h.connectedCityId !== g.connectedCityId,
   `${h?.connectedCityId} vs ${g?.connectedCityId}`);
+check('contested objectives spawned', host.state.objectives.size > 0, `count=${host.state.objectives.size}`);
 host.leave(); guest.leave();
 
 // ── Solo: auto-ready + auto-start, single player ──

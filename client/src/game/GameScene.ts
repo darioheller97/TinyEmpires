@@ -60,6 +60,8 @@ export interface MinimapData {
   fog: Uint8Array | null;
   cities: { x: number; y: number; color: string }[];
   lairs: { x: number; y: number; type: string; alive: boolean }[];
+  // Contested camps: drawn as diamonds, coloured by holder (grey = neutral).
+  objectives: { x: number; y: number; kind: string; color: string; contested: boolean }[];
   // Full curved road geometry (spline points), so the minimap traces real paths.
   roads: { pts: { x: number; y: number }[] }[];
   // Current camera viewport in world coords, drawn as a rectangle.
@@ -93,6 +95,7 @@ export default class GameScene extends Phaser.Scene {
   private cityGfx: Map<string, CityEntry> = new Map();
   private buildingGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: BuildData }> = new Map();
   private lairGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: LairData }> = new Map();
+  private objectiveGfx: Map<string, { gfx: Phaser.GameObjects.Container; bar: Phaser.GameObjects.Graphics; banner: Phaser.GameObjects.Container | null; data: { id: string; kind: string; x: number; y: number; ownerId: string; capture: number; contenderId: string; contested: boolean } }> = new Map();
   private unitGfx: Map<string, UnitVisual> = new Map();
   private cityHealthBars: Map<string, Phaser.GameObjects.Container> = new Map();
   private lairHealthBars: Map<string, Phaser.GameObjects.Container> = new Map();
@@ -305,6 +308,9 @@ export default class GameScene extends Phaser.Scene {
 
     state.lairs.forEach((l: any, id: string) => {
       this.drawLair({ id, x: l.x, y: l.y, type: l.type, health: l.health, maxHealth: l.maxHealth });
+    });
+    if (state.objectives) state.objectives.forEach((o: any, id: string) => {
+      this.drawObjective({ id, kind: o.kind, x: o.x, y: o.y, ownerId: o.ownerId, capture: o.capture, contenderId: o.contenderId, contested: o.contested });
     });
     state.intersections.forEach((n: any, id: string) => {
       this.drawIntersection(this.nodes.get(id)!);
@@ -646,6 +652,76 @@ export default class GameScene extends Phaser.Scene {
       if (bar) { bar.destroy(); this.lairHealthBars.delete(data.id); }
     } else {
       this.updateBar(this.lairHealthBars, data.id, data.x, data.y + 52, 44, data.health, data.maxHealth);
+    }
+  }
+
+  // ── Contested objectives (gold mine / mercenary camp / shrine) ──────
+  private objMeta(kind: string): { sprite: string; scale: number; origin: number; name: string } {
+    if (kind === 'merc') return { sprite: 'goblin_house', scale: 0.62, origin: 0.64, name: 'Mercenary Camp' };
+    if (kind === 'shrine') return { sprite: 'monastery_Blue', scale: 0.5, origin: 0.62, name: 'Shrine' };
+    return { sprite: 'goldmine_active', scale: 0.62, origin: 0.6, name: 'Gold Mine' };
+  }
+
+  private drawObjective(o: { id: string; kind: string; x: number; y: number; ownerId: string; capture: number; contenderId: string; contested: boolean }): void {
+    if (this.objectiveGfx.has(o.id)) return;
+    const meta = this.objMeta(o.kind);
+    const container = this.add.container(o.x, o.y);
+    // Soft capture-zone ring on the ground.
+    const zone = this.add.graphics();
+    zone.fillStyle(0xffe9a8, 0.05).fillCircle(0, 0, 58);
+    zone.lineStyle(2, 0xffe9a8, 0.16).strokeCircle(0, 0, 58);
+    container.add(zone);
+    // A shrine glows; the pulse is tweened and recoloured on capture.
+    if (o.kind === 'shrine') {
+      const aura = this.add.graphics();
+      aura.fillStyle(0xfff1b0, 0.22).fillCircle(0, -6, 30);
+      aura.setData('kind', 'aura');
+      container.add(aura);
+      this.tweens.add({ targets: aura, alpha: { from: 0.35, to: 0.9 }, scale: { from: 0.85, to: 1.15 }, duration: 1100, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    }
+    const img = this.add.image(0, 0, meta.sprite).setScale(meta.scale).setOrigin(0.5, meta.origin);
+    container.add(img);
+    const label = this.add.text(0, 40, meta.name, {
+      fontSize: '11px', color: '#ffe9a8', fontFamily: 'monospace', stroke: '#000', strokeThickness: 3,
+    }).setOrigin(0.5);
+    container.add(label);
+    container.setDepth(DEPTH_ENTITY + o.y * 0.01);
+    const bar = this.add.graphics().setDepth(DEPTH_ENTITY + o.y * 0.01 + 0.6);
+    const entry = { gfx: container, bar, banner: null as Phaser.GameObjects.Container | null, data: { ...o } };
+    this.objectiveGfx.set(o.id, entry);
+    this.refreshObjective(entry);
+  }
+
+  private refreshObjective(entry: { gfx: Phaser.GameObjects.Container; bar: Phaser.GameObjects.Graphics; banner: Phaser.GameObjects.Container | null; data: any }): void {
+    const { gfx, bar, data } = entry;
+    const owned = !!data.ownerId && this.playerColors.has(data.ownerId);
+    // Ownership banner: a pennant in the holder's colour atop the camp.
+    const wantOwner = owned ? data.ownerId : '';
+    if (gfx.getData('bannerOwner') !== wantOwner) {
+      const old = gfx.getData('bannerGfx') as Phaser.GameObjects.GameObject | undefined;
+      if (old) old.destroy();
+      if (owned) {
+        const pen = this.makePennant(this.playerColors.get(data.ownerId));
+        pen.setPosition(-9, -34);
+        gfx.add(pen);
+        gfx.setData('bannerGfx', pen);
+      } else {
+        gfx.setData('bannerGfx', undefined);
+      }
+      gfx.setData('bannerOwner', wantOwner);
+    }
+    // Capture / contest bar above the camp.
+    bar.clear();
+    const w = 48, h = 6, bx = data.x - w / 2, by = data.y - 46;
+    const frac = Math.max(0, Math.min(1, (data.capture || 0) / 100));
+    const showBar = data.contested || frac > 0.001 || owned;
+    if (showBar) {
+      bar.fillStyle(0x000000, 0.55).fillRect(bx - 1, by - 1, w + 2, h + 2);
+      let col = 0x9aa3ad, fillFrac = frac;
+      if (data.contested) { col = 0xffa53a; fillFrac = Math.max(0.18, frac); }
+      else if (data.contenderId && this.playerColors.has(data.contenderId)) col = Phaser.Display.Color.HexStringToColor(this.playerColors.get(data.contenderId)!).color;
+      else if (owned) { col = Phaser.Display.Color.HexStringToColor(this.playerColors.get(data.ownerId)!).color; fillFrac = 1; }
+      bar.fillStyle(col, 0.95).fillRect(bx, by, w * fillFrac, h);
     }
   }
 
@@ -1717,6 +1793,27 @@ export default class GameScene extends Phaser.Scene {
       this.refreshLairVisual(entry);
     });
 
+    if (state.objectives) state.objectives.forEach((s: any, id: string) => {
+      const entry = this.objectiveGfx.get(id);
+      if (!entry) return;
+      const prevOwner = entry.data.ownerId;
+      if (prevOwner !== s.ownerId) {
+        const meta = this.objMeta(s.kind);
+        const newReal = s.ownerId && this.playerColors.has(s.ownerId);
+        const mine = !!myId && s.ownerId === myId;
+        const involved = !!myId && (s.ownerId === myId || prevOwner === myId);
+        const color = newReal ? (this.playerColors.get(s.ownerId) || '#cccccc') : '#9aa3ad';
+        this.captureFlourish(entry.data.x, entry.data.y, color, mine, involved);
+        if (mine) this.emitEvent('obj_take', `✦ Seized the ${meta.name}!`, { x: entry.data.x, y: entry.data.y, color: '#ffe07a' });
+        else if (prevOwner === myId) this.emitEvent('obj_lost', `✦ Lost the ${meta.name}!`, { x: entry.data.x, y: entry.data.y, color: '#ff6a5a' });
+      }
+      entry.data.ownerId = s.ownerId;
+      entry.data.capture = s.capture;
+      entry.data.contenderId = s.contenderId;
+      entry.data.contested = s.contested;
+      this.refreshObjective(entry);
+    });
+
     this.cityBuildingCounts.clear();
     const liveBuildings = new Set<string>();
     state.buildings.forEach((b: any) => {
@@ -1841,7 +1938,7 @@ export default class GameScene extends Phaser.Scene {
         width: this.mapW, height: this.mapH,
         cols: ti?.cols ?? 0, rows: ti?.rows ?? 0, tile: TILE,
         fog: this.fogState,
-        cities: [], lairs: [], roads: this.minimapRoads,
+        cities: [], lairs: [], objectives: [], roads: this.minimapRoads,
         view: { x: vv.x, y: vv.y, w: vv.width, h: vv.height },
       };
       this.cityGfx.forEach(entry => {
@@ -1852,6 +1949,13 @@ export default class GameScene extends Phaser.Scene {
       });
       this.lairGfx.forEach(entry => {
         data.lairs.push({ x: entry.data.x, y: entry.data.y, type: entry.data.type, alive: entry.data.health > 0 });
+      });
+      this.objectiveGfx.forEach(entry => {
+        data.objectives.push({
+          x: entry.data.x, y: entry.data.y, kind: entry.data.kind,
+          color: entry.data.ownerId && this.playerColors.has(entry.data.ownerId) ? (this.playerColors.get(entry.data.ownerId) || '#cccccc') : '#9aa3ad',
+          contested: !!entry.data.contested,
+        });
       });
       onMinimapData(data);
     }

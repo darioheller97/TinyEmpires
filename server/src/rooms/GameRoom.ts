@@ -7,6 +7,7 @@ import { Road } from './schema/Road';
 import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS, PRODUCES, producerFor } from './schema/BuildingNode';
 import { ResourceNode, ResourceType, HARVEST_RATE } from './schema/ResourceNode';
 import { LairNode } from './schema/LairNode';
+import { ObjectiveNode } from './schema/ObjectiveNode';
 import { UnitNode, TROOP_STATS, TROOP_TYPES, RPS_ADVANTAGE } from './schema/UnitNode';
 import { Elevation } from './schema/Elevation';
 import { generateMap, computeLandGrid, generateElevations } from './MapGenerator';
@@ -43,6 +44,23 @@ const PVE_KILL_GOLD = 4;               // tiny gold a slain monster drops to its
 const AI_INTERVAL_TICKS = 20;          // bot empires reassess every ~2s
 const TREE_GROW_INTERVAL_TICKS = 50;   // ~5s between tree growth ticks
 const TREE_AGE_CAP = 40;               // older trees hold more wood, to this cap
+
+// ── Anti-snowball: diminishing per-city stipend ──
+// Each extra city an empire holds yields a little less passive town-hall income,
+// so the leader's economy can't run away (active villager gathering is untouched).
+// 1 city ×1.0 · 2 ×0.86ea · 3 ×0.72ea · 4 ×0.58ea · 5+ floored at ×0.45.
+const CITY_DIMINISH_STEP = 0.14;
+const CITY_DIMINISH_FLOOR = 0.45;
+
+// ── Contested mid-game objectives (gold mine / mercenary camp / shrine) ──
+const OBJ_CAPTURE_RADIUS = 150;        // px: military units this close contest it
+const OBJ_CAPTURE_THRESHOLD = 100;     // meter value at which ownership flips
+const OBJ_CAPTURE_RATE = 9;            // meter gained per beat by a lone holder (+ per extra unit)
+const OBJ_DECAY_RATE = 6;              // meter lost per beat when nobody contests
+const OBJ_MINE_GOLD = 3;               // gold/economy-tick a held gold mine yields
+const OBJ_MINE_WOOD = 2;               // wood/economy-tick a held gold mine yields
+const OBJ_MERC_INTERVAL = 240;         // ticks (~24s) between free mercenaries
+const OBJ_SHRINE_DAMAGE_MULT = 1.15;   // combat damage buff while a shrine is held
 
 /**
  * Rasterize a road spline into a 4-connected sequence of 64px tiles.
@@ -217,6 +235,9 @@ export class GameRoom extends Room<GameState> {
     });
     map.resources.forEach(r => {
       this.state.resources.set(r.id, new ResourceNode(r.id, r.type, r.x, r.y, r.amount));
+    });
+    map.objectives.forEach(o => {
+      this.state.objectives.set(o.id, new ObjectiveNode(o.id, o.kind, o.x, o.y));
     });
 
     // ── Plateaus / cliffs: land grid → elevation discs (server-authoritative) ──
@@ -504,6 +525,7 @@ export class GameRoom extends Room<GameState> {
   onLeave(client: Client, consented: boolean): void {
     const leaving = this.state.players.get(client.sessionId);
     this.state.cities.forEach(c => { if (c.ownerId === client.sessionId) c.ownerId = ''; });
+    this.state.objectives.forEach(o => { if (o.ownerId === client.sessionId) { o.ownerId = ''; o.capture = 0; o.contenderId = ''; } });
     const toRemove: string[] = [];
     this.state.units.forEach(u => { if (u.ownerId === client.sessionId) toRemove.push(u.id); });
     toRemove.forEach(id => this.state.units.delete(id));
@@ -535,6 +557,7 @@ export class GameRoom extends Room<GameState> {
     this.moveUnits();
     this.processCombat();
     this.processSieges();
+    this.processObjectives();
     this.processDefenseArchers();
     if (this.state.tick % HEAL_INTERVAL_TICKS === 0) this.processMonkHealing();
     if (this.state.tick % SHEEP_REGEN_INTERVAL_TICKS === 0) this.processSheepRegen();
@@ -546,17 +569,35 @@ export class GameRoom extends Room<GameState> {
 
   private processEconomy(): void {
     const income = new Map<string, { w: number; f: number; g: number; pop: number }>();
+    // Count each empire's cities first so extra cities can yield diminishing
+    // passive income (anti-snowball; villager gathering stays at full value).
+    const cityCount = new Map<string, number>();
+    this.state.cities.forEach(c => {
+      if (c.ownerId && this.state.players.has(c.ownerId)) cityCount.set(c.ownerId, (cityCount.get(c.ownerId) || 0) + 1);
+    });
     this.state.cities.forEach(city => {
       if (!city.ownerId || !this.state.players.has(city.ownerId)) return;
       const acc = income.get(city.ownerId) || { w: 0, f: 0, g: 0, pop: 10 };
+      // Diminishing-returns factor: the nth city of an empire trickles less.
+      const n = cityCount.get(city.ownerId) || 1;
+      const factor = Math.max(CITY_DIMINISH_FLOOR, 1 - (n - 1) * CITY_DIMINISH_STEP);
       // Small town-hall trickle; the real income comes from villagers
-      acc.w += city.townHallLevel;
-      acc.f += city.townHallLevel * 0.5;
-      acc.g += city.townHallLevel * 0.25;
+      acc.w += city.townHallLevel * factor;
+      acc.f += city.townHallLevel * 0.5 * factor;
+      acc.g += city.townHallLevel * 0.25 * factor;
       this.buildingsOf(city.id).forEach(b => {
         if (b.type === 'house') acc.pop += 5;
       });
       income.set(city.ownerId, acc);
+    });
+    // Held gold mines pour a steady stream into the owner's coffers — a strong,
+    // readable comeback faucet for a player who's been pushed off their cities.
+    this.state.objectives.forEach(obj => {
+      if (obj.kind !== 'mine' || !obj.ownerId || !this.state.players.has(obj.ownerId)) return;
+      const acc = income.get(obj.ownerId) || { w: 0, f: 0, g: 0, pop: 10 };
+      acc.g += OBJ_MINE_GOLD;
+      acc.w += OBJ_MINE_WOOD;
+      income.set(obj.ownerId, acc);
     });
     this.state.players.forEach(player => {
       const acc = income.get(player.id);
@@ -1188,6 +1229,9 @@ export class GameRoom extends Room<GameState> {
     if (RPS_ADVANTAGE[attacker.type] === defender.type) base *= 1.5;
     else if (RPS_ADVANTAGE[defender.type] === attacker.type) base *= 0.7;
 
+    // A held shrine empowers all of the holder's troops in battle.
+    if (!attacker.isPvE && this.holdsShrine(attacker.ownerId)) base *= OBJ_SHRINE_DAMAGE_MULT;
+
     // Armour soaks damage; the attacker's penetration ignores a fraction of it.
     // Knights (high armour) shrug off arrows; lancers (high pen) punch through.
     const armor = (dStats?.armor ?? 0) * (1 - aStats.armorPen);
@@ -1264,6 +1308,104 @@ export class GameRoom extends Room<GameState> {
     });
     // The fort itself deals no damage — its archers (processDefenseArchers) do,
     // and they shoot besiegers (at the node, in range) and passers-by alike.
+  }
+
+  // ─── Contested objectives ───────────────────────────────────
+  // Capture-and-hold camps on the central lanes. A side captures by being the
+  // only military presence nearby (tug-of-war meter); two rival sides freeze it
+  // (contested). A defender parking a couple of units denies the leader without
+  // having to out-army them — that's the anti-snowball lever.
+  private processObjectives(): void {
+    if (this.state.objectives.size === 0) return;
+    const onBeat = this.state.tick % MOVE_BEAT_TICKS === 0;
+
+    // Tally military presence near each objective, per owning side.
+    const near = new Map<string, Map<string, number>>();
+    this.state.units.forEach(u => {
+      if (u.type === 'villager' || u.health <= 0) return;
+      const side = u.isPvE ? 'pve' : u.ownerId;
+      if (!side) return;
+      const pos = this.unitWorldPos(u);
+      this.state.objectives.forEach(obj => {
+        if (Math.hypot(obj.x - pos.x, obj.y - pos.y) > OBJ_CAPTURE_RADIUS) return;
+        let m = near.get(obj.id);
+        if (!m) { m = new Map(); near.set(obj.id, m); }
+        m.set(side, (m.get(side) || 0) + 1);
+      });
+    });
+
+    this.state.objectives.forEach(obj => {
+      // Merc camps gift the holder a free unit on a timer (any tick).
+      if (obj.kind === 'merc' && obj.ownerId && this.state.players.has(obj.ownerId)
+          && this.state.tick - obj.lastSpawnTick >= OBJ_MERC_INTERVAL) {
+        if (this.spawnMercenary(obj.ownerId)) obj.lastSpawnTick = this.state.tick;
+      }
+      if (!onBeat) return;
+
+      const m = near.get(obj.id);
+      // Only real players contest objectives (PvE just denies, never captures).
+      const playerSides = m ? [...m.keys()].filter(s => s !== 'pve' && this.state.players.has(s)) : [];
+      const pvePresent = !!m && (m.get('pve') || 0) > 0;
+
+      if (playerSides.length >= 2 || (playerSides.length === 1 && pvePresent && playerSides[0] !== obj.ownerId)) {
+        // Two empires (or an empire vs lurking monsters at a neutral camp) → standoff.
+        obj.contested = true;
+        return;
+      }
+      obj.contested = false;
+
+      if (playerSides.length === 1) {
+        const side = playerSides[0];
+        const count = m!.get(side) || 1;
+        if (side === obj.ownerId) {
+          // The owner is standing on it — settle the meter back to a clean hold.
+          obj.capture = 0; obj.contenderId = '';
+        } else {
+          // A single challenger pushes the capture meter toward themselves.
+          if (obj.contenderId !== side) { obj.contenderId = side; obj.capture = 0; }
+          obj.capture += OBJ_CAPTURE_RATE + Math.min(3, count - 1) * 2;
+          if (obj.capture >= OBJ_CAPTURE_THRESHOLD) {
+            obj.ownerId = side; obj.capture = 0; obj.contenderId = '';
+          }
+        }
+      } else {
+        // Nobody present — the meter bleeds back toward neutral; long-abandoned
+        // unheld progress fades, but an owned camp stays owned until contested.
+        if (obj.capture > 0) obj.capture = Math.max(0, obj.capture - OBJ_DECAY_RATE);
+        if (obj.capture === 0) obj.contenderId = '';
+      }
+    });
+  }
+
+  // A merc camp's gift: a free unit dropped into the holder's army at their
+  // capital, joining the rally flow. Rotates type so it stays composition-neutral.
+  private spawnMercenary(ownerId: string): boolean {
+    const player = this.state.players.get(ownerId);
+    if (!player) return false;
+    const city = this.state.cities.get(player.connectedCityId)
+      || [...this.state.cities.values()].find(c => c.ownerId === ownerId);
+    if (!city) return false;
+    const exits = [...this.state.roads.values()].filter(r => r.fromId === city.id);
+    const targetRoad = exits.find(r => r.id === city.rallyRoadId) || exits[0];
+    if (!targetRoad || !this.isSlotFree(targetRoad.id, 0)) return false;
+    const types = ['knight', 'archer', 'lancer'];
+    const type = types[(this.state.tick / OBJ_MERC_INTERVAL | 0) % types.length];
+    const unit = new UnitNode(nextId('merc'), ownerId, type, targetRoad.id);
+    unit.originNodeId = city.id;
+    // Mercs are free of resources but still count as army population, so the
+    // population bookkeeping (refundPop on death) stays balanced.
+    player.populationUsed += 1;
+    if (player.hasTech('hp_all')) { unit.maxHealth = Math.floor(unit.maxHealth * 1.2); unit.health = unit.maxHealth; }
+    this.state.units.set(unit.id, unit);
+    return true;
+  }
+
+  /** Does this player currently hold any shrine? (cheap — few objectives). */
+  private holdsShrine(ownerId: string): boolean {
+    for (const obj of this.state.objectives.values()) {
+      if (obj.kind === 'shrine' && obj.ownerId === ownerId) return true;
+    }
+    return false;
   }
 
   // World position of any unit: villagers carry x/y; parked units sit at their
@@ -1445,6 +1587,8 @@ export class GameRoom extends Room<GameState> {
         const rm: string[] = [];
         this.state.units.forEach(u => { if (u.ownerId === p.id) rm.push(u.id); });
         rm.forEach(id => this.state.units.delete(id));
+        // Release any camps the fallen empire held back to neutral.
+        this.state.objectives.forEach(o => { if (o.ownerId === p.id) { o.ownerId = ''; o.capture = 0; o.contenderId = ''; } });
       }
     });
     const alive = [...this.state.players.values()].filter(p => !p.eliminated && (cityCount.get(p.id) || 0) > 0);

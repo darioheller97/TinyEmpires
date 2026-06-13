@@ -6,6 +6,7 @@ export interface GenNode { id: string; x: number; y: number; name: string; }
 export interface GenLair extends GenNode { type: string; }
 export interface GenEdge { a: string; b: string; via: { x: number; y: number }[]; }
 export interface GenResource { id: string; type: 'tree' | 'sheep' | 'gold'; x: number; y: number; amount: number; }
+export interface GenObjective { id: string; kind: 'mine' | 'merc' | 'shrine'; x: number; y: number; }
 
 export interface GeneratedMap {
   seed: number;
@@ -16,6 +17,7 @@ export interface GeneratedMap {
   lairs: GenLair[];
   edges: GenEdge[];
   resources: GenResource[];
+  objectives: GenObjective[];
 }
 
 const CITY_NAMES = [
@@ -251,7 +253,32 @@ export function generateMap(seed: number, opts: MapOpts = {}): GeneratedMap {
     if (rng() < 0.2) addCluster(p.x - 150, p.y - 100, 'gold', 1, 60, 320);
   }
 
-  return { seed, width, height, cities, intersections, lairs, edges, resources };
+  // ── Contested objectives: capture-and-hold camps on the busy central lanes ──
+  // Sited at road-lane midpoints near the map centre so marching armies pass
+  // right over them; the trailing player gets a comeback target and the leader
+  // has to split forces to hold them.
+  const objCount = opts.size === 'large' ? 4 : opts.size === 'small' ? 2 : 3;
+  const OBJ_KINDS: GenObjective['kind'][] = ['mine', 'merc', 'shrine'];
+  const objectives: GenObjective[] = [];
+  const center = { x: width / 2, y: height / 2 };
+  const objSpacing = preset.spacing * 0.55;
+  const laneMidpoints = edges.map(e => {
+    const a = nodeById.get(e.a)!, b = nodeById.get(e.b)!;
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    // Snap to the via point nearest the geometric midpoint = a real on-road spot.
+    const pts = [...e.via, mid];
+    return pts.reduce((p, q) => (dist(q, mid) < dist(p, mid) ? q : p), pts[0]);
+  })
+    .filter(p => cities.every(c => dist(c, p) >= 340) && lairs.every(l => dist(l, p) >= 300))
+    .sort((p, q) => dist(p, center) - dist(q, center));
+  for (const p of laneMidpoints) {
+    if (objectives.length >= objCount) break;
+    if (objectives.some(o => dist(o, p) < objSpacing)) continue;
+    const kind = OBJ_KINDS[objectives.length % OBJ_KINDS.length];
+    objectives.push({ id: `obj_${objectives.length}`, kind, x: Math.round(p.x), y: Math.round(p.y) });
+  }
+
+  return { seed, width, height, cities, intersections, lairs, edges, resources, objectives };
 }
 
 const TILE = 64;

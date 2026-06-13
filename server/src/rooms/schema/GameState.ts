@@ -7,6 +7,7 @@ import { LairNode } from './LairNode';
 import { BuildingNode } from './BuildingNode';
 import { UnitNode } from './UnitNode';
 import { ResourceNode } from './ResourceNode';
+import { ObjectiveNode } from './ObjectiveNode';
 import { Elevation } from './Elevation';
 
 export class GameState extends Schema {
@@ -33,6 +34,10 @@ export class GameState extends Schema {
 
   @type({ map: ResourceNode })
   resources = new MapSchema<ResourceNode>();
+
+  // Contested mid-game camps (gold mine / mercenary camp / shrine).
+  @type({ map: ObjectiveNode })
+  objectives = new MapSchema<ObjectiveNode>();
 
   @type([Elevation])
   elevations = new ArraySchema<Elevation>();
