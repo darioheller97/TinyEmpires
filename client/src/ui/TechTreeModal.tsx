@@ -1,5 +1,5 @@
 import React from 'react';
-import { PANEL, BUTTON, BUTTON_DISABLED, BUTTON_RED, ICONS, RES_ICON } from './skin';
+import { PANEL, RIBBON, BUTTON, BUTTON_DISABLED, BUTTON_RED, ICONS, RES_ICON } from './skin';
 
 export interface TechOption {
   id: string;
@@ -57,7 +57,7 @@ export default function TechTreeModal({ visible, researched, gold, techs, onRese
   return (
     <div style={OVERLAY} onClick={onClose}>
       <div style={MODAL} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: '18px', textAlign: 'center', marginBottom: '4px' }}>Tech Tree</div>
+        <div style={{ ...RIBBON, fontSize: '17px' }}>Tech Tree</div>
         <div style={{ fontSize: '12px', textAlign: 'center', marginBottom: '10px' }}>
           <img src={ICONS.gold} style={SMALL_ICON} alt="g" /> {Math.floor(gold)}
         </div>

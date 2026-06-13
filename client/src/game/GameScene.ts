@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { GameClient } from '../network/GameClient';
 import { preloadAssets, createAnims, unitSkin, factionOf } from './assets';
-import { buildTerrain } from './terrain';
+import { buildTerrain, TerrainInfo, TILE, WATER } from './terrain';
 
 interface NodeInfo { id: string; x: number; y: number; name: string; kind: 'city' | 'intersection' | 'lair'; }
 interface RoadData { id: string; fromId: string; toId: string; splinePoints: { x: number; y: number }[]; }
@@ -17,7 +17,7 @@ export interface BuildData {
 }
 export interface LairData { id: string; x: number; y: number; type: string; health: number; maxHealth: number; }
 
-export type SelectionType = 'city' | 'intersection' | 'building' | 'none';
+export type SelectionType = 'city' | 'intersection' | 'building' | 'resource' | 'none';
 export interface SelectionInfo {
   type: SelectionType; id: string; name: string; data?: any;
 }
@@ -65,6 +65,15 @@ export default class GameScene extends Phaser.Scene {
   private radialMenu: Phaser.GameObjects.Container | null = null;
   private myRoutes: Map<string, string> = new Map();
   private dragMoved = false;
+
+  // Resource nodes (server-driven trees/sheep/gold)
+  private resourceGfx: Map<string, { gfx: Phaser.GameObjects.Container; data: any }> = new Map();
+
+  // Terrain + fog of war
+  private terrainInfo: TerrainInfo | null = null;
+  private fogState: Uint8Array | null = null; // 0 unexplored, 1 explored, 2 visible
+  private fogGfx: Phaser.GameObjects.Graphics | null = null;
+  private lastFogUpdate = 0;
 
   constructor() { super({ key: 'GameScene' }); }
 
@@ -123,14 +132,17 @@ export default class GameScene extends Phaser.Scene {
       }
     });
 
-    buildTerrain(this, {
+    this.terrainInfo = buildTerrain(this, {
       seed: state.mapSeed || 1,
       width: this.mapW,
       height: this.mapH,
       cities: [...state.cities.values()].map((c: any) => ({ x: c.x, y: c.y })),
       lairs: [...state.lairs.values()].map((l: any) => ({ x: l.x, y: l.y })),
+      resources: [...state.resources.values()].map((r: any) => ({ x: r.x, y: r.y })),
       roadSplines: physicalSplines,
     });
+    this.fogState = new Uint8Array(this.terrainInfo.cols * this.terrainInfo.rows);
+    this.fogGfx = this.add.graphics().setDepth(60);
 
     state.lairs.forEach((l: any, id: string) => {
       this.drawLair({ id, x: l.x, y: l.y, type: l.type, health: l.health, maxHealth: l.maxHealth });
@@ -266,8 +278,9 @@ export default class GameScene extends Phaser.Scene {
   // ── Cities ────────────────────────────────────────────────
   private drawCity(city: CityData): void {
     const container = this.add.container(city.x, city.y);
-    const influence = this.add.circle(0, 0, city.influenceRadius, 0x4488ff, 0.06);
-    influence.setStrokeStyle(1, 0x4488ff, 0.18);
+    // Influence is shown as a terrain-tile highlight on selection instead
+    const influence = this.add.circle(0, 0, city.influenceRadius, 0x4488ff, 0);
+    influence.setVisible(false);
     const castle = this.add.image(0, 0, city.ownerId ? `castle_${factionOf(this.playerColors.get(city.ownerId))}` : 'castle_destroyed');
     castle.setScale(0.55).setOrigin(0.5, 0.6);
     const fire = this.add.sprite(-30, -40, 'fire').setScale(0.8).setVisible(false);
@@ -297,17 +310,6 @@ export default class GameScene extends Phaser.Scene {
     const key = data.ownerId ? `castle_${factionOf(this.playerColors.get(data.ownerId))}` : 'castle_destroyed';
     if (castle.texture.key !== key) castle.setTexture(key);
     (gfx.getAt(5) as Phaser.GameObjects.Text).setText(`Lv.${data.townHallLevel}`);
-    const influence = gfx.getAt(0) as Phaser.GameObjects.Arc;
-    influence.setRadius(data.influenceRadius);
-    const ownerColor = data.ownerId ? this.playerColors.get(data.ownerId) : undefined;
-    if (ownerColor) {
-      const c = Phaser.Display.Color.HexStringToColor(ownerColor).color;
-      influence.setFillStyle(c, 0.06);
-      influence.setStrokeStyle(1, c, 0.22);
-    } else {
-      influence.setFillStyle(0xffffff, 0.03);
-      influence.setStrokeStyle(1, 0xffffff, 0.1);
-    }
     // Burning when badly damaged
     const burning = data.health < data.maxHealth * 0.7;
     (gfx.getAt(2) as Phaser.GameObjects.Sprite).setVisible(burning);
@@ -384,6 +386,97 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  // ── Resource nodes ─────────────────────────────────────────
+  private drawResource(r: any): void {
+    const existing = this.resourceGfx.get(r.id);
+    if (existing) { Object.assign(existing.data, { amount: r.amount, maxAmount: r.maxAmount }); return; }
+    const container = this.add.container(r.x, r.y);
+    if (r.type === 'tree') {
+      const t = this.add.sprite(0, 0, 'tree').setOrigin(0.5, 0.75);
+      t.play({ key: 'tree_anim', startFrame: (r.x + r.y) % 4 });
+      container.add(t);
+    } else if (r.type === 'sheep') {
+      const s = this.add.sprite(0, 0, 'sheep').setScale(0.7);
+      s.play({ key: 'sheep_anim', startFrame: (r.x + r.y) % 6 });
+      container.add(s);
+    } else {
+      container.add(this.add.image(0, 0, 'goldmine').setScale(0.6).setOrigin(0.5, 0.62));
+    }
+    container.setDepth(DEPTH_ENTITY + r.y * 0.01);
+    container.setInteractive(new Phaser.Geom.Rectangle(-28, -40, 56, 64), Phaser.Geom.Rectangle.Contains);
+    const names: Record<string, string> = { tree: 'Forest', sheep: 'Sheep', gold: 'Gold Deposit' };
+    const entry = { gfx: container, data: { id: r.id, type: r.type, x: r.x, y: r.y, amount: r.amount, maxAmount: r.maxAmount } };
+    container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('resource', r.id, names[r.type] || r.type, entry.data); });
+    this.resourceGfx.set(r.id, entry);
+  }
+
+  // ── Fog of war ─────────────────────────────────────────────
+  private updateFog(state: any): void {
+    if (!this.terrainInfo || !this.fogState || !this.fogGfx) return;
+    if (this.time.now - this.lastFogUpdate < 400) return;
+    this.lastFogUpdate = this.time.now;
+    const { cols, rows } = this.terrainInfo;
+    const fog = this.fogState;
+    const myId = this.client?.sessionId;
+
+    // Visible → explored, then re-mark from my vision sources
+    for (let i = 0; i < fog.length; i++) if (fog[i] === 2) fog[i] = 1;
+    const reveal = (x: number, y: number, radius: number) => {
+      const rT = Math.ceil(radius / TILE);
+      const cc = Math.floor(x / TILE), cr = Math.floor(y / TILE);
+      for (let r = Math.max(0, cr - rT); r <= Math.min(rows - 1, cr + rT); r++) {
+        for (let c = Math.max(0, cc - rT); c <= Math.min(cols - 1, cc + rT); c++) {
+          const dx = c * TILE + TILE / 2 - x, dy = r * TILE + TILE / 2 - y;
+          if (dx * dx + dy * dy <= radius * radius) fog[r * cols + c] = 2;
+        }
+      }
+    };
+    if (myId) {
+      state.cities.forEach((c: any) => { if (c.ownerId === myId) reveal(c.x, c.y, c.influenceRadius + 220); });
+      state.units.forEach((u: any) => {
+        if (u.ownerId !== myId) return;
+        const pos = this.getUnitWorldPos(u);
+        if (pos) reveal(pos.x, pos.y, 300);
+      });
+    }
+
+    // Draw fog overlay
+    this.fogGfx.clear();
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const s = fog[r * cols + c];
+        if (s === 2) continue;
+        this.fogGfx.fillStyle(0x06101c, s === 0 ? 0.88 : 0.4);
+        this.fogGfx.fillRect(c * TILE, r * TILE, TILE, TILE);
+      }
+    }
+
+    // Hide/show world entities by fog state
+    const stateAt = (x: number, y: number): number => {
+      const c = Math.floor(x / TILE), r = Math.floor(y / TILE);
+      if (c < 0 || c >= cols || r < 0 || r >= rows) return 0;
+      return fog[r * cols + c];
+    };
+    this.unitGfx.forEach((u, id) => {
+      const mine = !myId ? true : (u.container.getData('ownerId') === myId);
+      u.container.setVisible(mine || stateAt(u.container.x, u.container.y) === 2);
+    });
+    this.resourceGfx.forEach(e => e.gfx.setVisible(stateAt(e.data.x, e.data.y) >= 1));
+    this.lairGfx.forEach(e => {
+      const vis = stateAt(e.data.x, e.data.y) >= 1;
+      e.gfx.setVisible(vis);
+      const bar = this.lairHealthBars.get(e.data.id);
+      if (bar) bar.setVisible(vis);
+    });
+    this.cityGfx.forEach(e => {
+      const vis = stateAt(e.data.x, e.data.y) >= 1;
+      e.gfx.setVisible(vis);
+      const bar = this.cityHealthBars.get(e.data.id);
+      if (bar) bar.setVisible(vis);
+    });
+    this.buildingGfx.forEach(e => e.gfx.setVisible(stateAt(e.data.x, e.data.y) >= 1));
+  }
+
   private updateBar(store: Map<string, Phaser.GameObjects.Graphics>, id: string, cx: number, y: number, width: number, hp: number, maxHp: number): void {
     let bar = store.get(id);
     if (hp >= maxHp) {
@@ -433,6 +526,7 @@ export default class GameScene extends Phaser.Scene {
     hpBar.setVisible(false);
     container.add([sprite, hpBar]);
     container.setData('worldPos', pos);
+    container.setData('ownerId', unit.ownerId);
     container.setDepth(DEPTH_ENTITY + pos.y * 0.01);
     this.unitGfx.set(unit.id, { container, sprite, hpBar, sheet: skin.sheet, anim: animKey });
   }
@@ -456,6 +550,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   private getUnitWorldPos(unit: any): { x: number; y: number } | null {
+    if (unit.type === 'villager') return { x: unit.x, y: unit.y };
     if (unit.atNodeId) {
       const node = this.nodes.get(unit.atNodeId);
       if (!node) return null;
@@ -504,9 +599,28 @@ export default class GameScene extends Phaser.Scene {
     if (!data) return;
     this.selectionRing.lineStyle(2, 0xffff00, 0.9);
     if (type === 'city') {
-      this.selectionRing.strokeCircle(data.x, data.y, data.influenceRadius);
+      // Influence zone as terrain tiles (land cells within radius)
+      if (this.terrainInfo) {
+        const { grid, cols, rows } = this.terrainInfo;
+        const rad = data.influenceRadius;
+        this.selectionRing.fillStyle(0xffe87a, 0.16);
+        const c0 = Math.max(0, Math.floor((data.x - rad) / TILE));
+        const c1 = Math.min(cols - 1, Math.floor((data.x + rad) / TILE));
+        const r0 = Math.max(0, Math.floor((data.y - rad) / TILE));
+        const r1 = Math.min(rows - 1, Math.floor((data.y + rad) / TILE));
+        for (let r = r0; r <= r1; r++) {
+          for (let c = c0; c <= c1; c++) {
+            if (grid[r][c] === WATER) continue;
+            const cx = c * TILE + TILE / 2, cy = r * TILE + TILE / 2;
+            if (Math.hypot(cx - data.x, cy - data.y) > rad) continue;
+            this.selectionRing.fillRect(c * TILE + 2, r * TILE + 2, TILE - 4, TILE - 4);
+          }
+        }
+      }
       this.selectionRing.lineStyle(3, 0xffff00, 1);
       this.selectionRing.strokeCircle(data.x, data.y, 70);
+    } else if (type === 'resource') {
+      this.selectionRing.strokeCircle(data.x, data.y, 30);
     } else if (type === 'intersection') {
       this.selectionRing.strokeCircle(data.x, data.y, 24);
     } else if (type === 'building') {
@@ -538,7 +652,7 @@ export default class GameScene extends Phaser.Scene {
       }
     });
     this.input.on('wheel', (_p: Phaser.Input.Pointer, _objs: unknown[], _dx: number, dy: number) => {
-      this.cameras.main.setZoom(Phaser.Math.Clamp(this.cameras.main.zoom - dy * 0.001, 0.5, 2));
+      this.cameras.main.setZoom(Phaser.Math.Clamp(this.cameras.main.zoom - dy * 0.001, 0.3, 2));
     });
     this.input.on('pointerdown', () => { this.dragMoved = false; });
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
@@ -618,6 +732,22 @@ export default class GameScene extends Phaser.Scene {
     const onBuildingsUpdate = this.game.registry.get('onBuildingsUpdate') as ((c: Map<string, number>) => void);
     if (onBuildingsUpdate) onBuildingsUpdate(new Map(this.cityBuildingCounts));
 
+    // Resource nodes
+    if (state.resources) {
+      const liveRes = new Set<string>();
+      state.resources.forEach((r: any) => {
+        liveRes.add(r.id);
+        this.drawResource(r);
+      });
+      this.resourceGfx.forEach((entry, id) => {
+        if (!liveRes.has(id)) {
+          entry.gfx.destroy();
+          this.resourceGfx.delete(id);
+          if (this.selection.type === 'resource' && this.selection.id === id) this.clearSelection();
+        }
+      });
+    }
+
     const syncedIds = new Set<string>();
     state.units.forEach((u: any) => {
       syncedIds.add(u.id);
@@ -653,6 +783,8 @@ export default class GameScene extends Phaser.Scene {
         }
       }
     }
+
+    this.updateFog(state);
 
     const onMinimapData = this.game.registry.get('onMinimapData') as ((d: MinimapData) => void) | undefined;
     if (onMinimapData) {

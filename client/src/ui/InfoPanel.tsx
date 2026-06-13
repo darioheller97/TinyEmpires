@@ -1,6 +1,6 @@
 import React from 'react';
 import { SelectionInfo } from '../game/GameScene';
-import { PANEL } from './skin';
+import { PANEL, RIBBON } from './skin';
 
 interface Props {
   selection: SelectionInfo;
@@ -13,12 +13,7 @@ const WRAP: React.CSSProperties = {
   fontSize: '12px',
 };
 
-const NAME: React.CSSProperties = {
-  fontSize: '14px',
-  marginBottom: '6px',
-  borderBottom: '2px solid rgba(74,47,20,0.3)',
-  paddingBottom: '4px',
-};
+const NAME: React.CSSProperties = { ...RIBBON, fontSize: '13px', minWidth: '90px' };
 
 const LABEL: React.CSSProperties = { opacity: 0.7, marginRight: '6px' };
 
@@ -26,13 +21,12 @@ const TYPE_LABELS: Record<string, string> = {
   city: 'City',
   intersection: 'Crossroads',
   building: 'Building',
+  resource: 'Resource',
   none: '—',
 };
 
 const BUILDING_NAMES: Record<string, string> = {
-  lumber_mill: 'Lumber Mill',
-  farm: 'Farm',
-  gold_mine: 'Gold Mine',
+  house: 'House',
   barracks: 'Barracks',
   defense_tower: 'Defense Tower',
 };
@@ -69,6 +63,15 @@ export default function InfoPanel({ selection }: Props) {
 
       {selection.data && selection.type === 'building' && (
         <div><span style={LABEL}>Health:</span>{Math.floor(selection.data.health || 200)}/{selection.data.maxHealth || 200}</div>
+      )}
+
+      {selection.data && selection.type === 'resource' && (
+        <>
+          <div><span style={LABEL}>Remaining:</span>{Math.ceil(selection.data.amount)}/{selection.data.maxAmount}</div>
+          <div style={{ fontSize: '11px', opacity: 0.6, marginTop: '4px' }}>
+            Hire villagers at your castle to gather this.
+          </div>
+        </>
       )}
 
       {selection.data && selection.type === 'intersection' && (

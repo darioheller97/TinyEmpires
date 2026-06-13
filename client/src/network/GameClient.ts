@@ -62,6 +62,10 @@ export class GameClient {
     this.room?.send('spawn_troops', { cityId, type });
   }
 
+  spawnVillager(cityId: string, resourceType: string): void {
+    this.room?.send('spawn_villager', { cityId, resourceType });
+  }
+
   setAutoProduce(buildingId: string, troopType: string): void {
     this.room?.send('set_auto_produce', { buildingId, troopType });
   }

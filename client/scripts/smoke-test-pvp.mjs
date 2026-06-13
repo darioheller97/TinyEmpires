@@ -1,13 +1,13 @@
-// PvP smoke test on a generated map: two players push troops out; expect
+﻿// PvP smoke test on a generated map: two players push troops out; expect
 // engagements or sieges to deal damage, and population to be refunded.
 import { Client } from 'colyseus.js';
 
 const url = process.argv[2] || 'ws://localhost:2567';
-const SEED = 16;
+const SEED = 7;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failures = 0;
 function check(name, cond, detail = '') {
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? ` â€” ${detail}` : ''}`);
   if (!cond) failures++;
 }
 

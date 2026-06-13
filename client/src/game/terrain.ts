@@ -11,11 +11,19 @@ export interface TerrainInput {
   height: number;
   cities: { x: number; y: number }[];
   lairs: { x: number; y: number }[];
+  resources: { x: number; y: number }[];
   roadSplines: { x: number; y: number }[][]; // one per physical road
 }
 
-const TILE = 64;
-const WATER = 0, GRASS = 1, SAND = 2;
+export interface TerrainInfo {
+  grid: number[][]; // [row][col]: 0 water, 1 grass, 2 sand
+  cols: number;
+  rows: number;
+  tile: number;
+}
+
+export const TILE = 64;
+export const WATER = 0, GRASS = 1, SAND = 2;
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -27,7 +35,7 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): void {
+export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainInfo {
   const rng = mulberry32(input.seed);
   const cols = Math.ceil(input.width / TILE);
   const rows = Math.ceil(input.height / TILE);
@@ -38,11 +46,12 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): void {
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const p = cellCenter(c, r);
-      const nearCity = input.cities.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 280);
-      const nearLair = input.lairs.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 190);
-      const nearRoad = !nearCity && !nearLair && input.roadSplines.some(spline =>
-        spline.some((sp, i) => i % 3 === 0 && Math.hypot(sp.x - p.x, sp.y - p.y) < 170));
-      if (nearCity || nearLair || nearRoad) grid[r][c] = GRASS;
+      const nearCity = input.cities.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 420);
+      const nearLair = !nearCity && input.lairs.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 220);
+      const nearRes = !nearCity && !nearLair && input.resources.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 180);
+      const nearRoad = !nearCity && !nearLair && !nearRes && input.roadSplines.some(spline =>
+        spline.some((sp, i) => i % 4 === 0 && Math.hypot(sp.x - p.x, sp.y - p.y) < 150));
+      if (nearCity || nearLair || nearRes || nearRoad) grid[r][c] = GRASS;
     }
   }
   // Organic coastline: one randomized dilation pass
@@ -112,38 +121,15 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): void {
       .setDepth(1).play({ key: rng() < 0.5 ? 'rocks1_anim' : 'rocks2_anim', startFrame: Math.floor(rng() * 8) });
   }
 
-  // ── Forests: clusters of swaying trees on open grass ──
-  const grassCells: [number, number][] = [];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    if (grid[r][c] !== GRASS) continue;
-    // keep clear of city surroundings
-    const p = cellCenter(c, r);
-    if (input.cities.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 200)) continue;
-    if (input.lairs.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 120)) continue;
-    grassCells.push([r, c]);
-  }
-  const clusters = 6;
-  for (let k = 0; k < clusters && grassCells.length > 0; k++) {
-    const [cr, cc] = grassCells[Math.floor(rng() * grassCells.length)];
-    const center = cellCenter(cc, cr);
-    const count = 3 + Math.floor(rng() * 5);
-    for (let t = 0; t < count; t++) {
-      const x = center.x + (rng() - 0.5) * 220;
-      const y = center.y + (rng() - 0.5) * 180;
-      const c = Math.floor(x / TILE), r = Math.floor(y / TILE);
-      if (!isLand(r, c) || isSand(r, c)) continue;
-      scene.add.sprite(x, y, 'tree')
-        .setOrigin(0.5, 0.78)
-        .setDepth(10 + y * 0.01)
-        .play({ key: 'tree_anim', startFrame: Math.floor(rng() * 4) });
-    }
-  }
-
   // ── Scattered decorations (mushrooms, bushes, stones…) ──
-  grassCells.forEach(([r, c]) => {
-    if (rng() > 0.05) return;
+  // Trees/sheep/gold come from server resource nodes, drawn by the scene.
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    if (grid[r][c] !== GRASS || rng() > 0.04) continue;
     const p = cellCenter(c, r);
+    if (input.cities.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 180)) continue;
     const idx = 1 + Math.floor(rng() * 18);
     scene.add.image(p.x + (rng() - 0.5) * 30, p.y + (rng() - 0.5) * 30, `deco_${idx}`).setDepth(4);
-  });
+  }
+
+  return { grid, cols, rows, tile: TILE };
 }

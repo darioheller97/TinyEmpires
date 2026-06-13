@@ -5,6 +5,7 @@
 export interface GenNode { id: string; x: number; y: number; name: string; }
 export interface GenLair extends GenNode { type: string; }
 export interface GenEdge { a: string; b: string; via: { x: number; y: number }[]; }
+export interface GenResource { id: string; type: 'tree' | 'sheep' | 'gold'; x: number; y: number; amount: number; }
 
 export interface GeneratedMap {
   seed: number;
@@ -14,6 +15,7 @@ export interface GeneratedMap {
   intersections: GenNode[];
   lairs: GenLair[];
   edges: GenEdge[];
+  resources: GenResource[];
 }
 
 const CITY_NAMES = [
@@ -48,8 +50,8 @@ function segIntersect(p1: any, p2: any, p3: any, p4: any): { x: number; y: numbe
 
 export function generateMap(seed: number): GeneratedMap {
   const rng = mulberry32(seed);
-  const width = 1920, height = 1216;
-  const margin = 240;
+  const width = 4800, height = 3008;
+  const margin = 480;
 
   // ── Cities ──
   const cityCount = 4;
@@ -61,7 +63,7 @@ export function generateMap(seed: number): GeneratedMap {
       x: margin + rng() * (width - margin * 2),
       y: margin + rng() * (height - margin * 2),
     };
-    if (cities.some(c => dist(c, p) < 480)) continue;
+    if (cities.some(c => dist(c, p) < 1100)) continue;
     const name = namePool.splice(Math.floor(rng() * namePool.length), 1)[0];
     cities.push({ id: `city_${cities.length}`, x: Math.round(p.x), y: Math.round(p.y), name });
   }
@@ -109,11 +111,11 @@ export function generateMap(seed: number): GeneratedMap {
   attempts = 0;
   while (lairs.length < lairTypes.length && attempts++ < 400) {
     const p = {
-      x: 140 + rng() * (width - 280),
-      y: 140 + rng() * (height - 280),
+      x: 300 + rng() * (width - 600),
+      y: 300 + rng() * (height - 600),
     };
-    if (cities.some(c => dist(c, p) < 380)) continue;
-    if (lairs.some(l => dist(l, p) < 500)) continue;
+    if (cities.some(c => dist(c, p) < 800)) continue;
+    if (lairs.some(l => dist(l, p) < 1200)) continue;
     const lt = lairTypes[lairs.length];
     lairs.push({ id: `lair_${lt.type}`, x: Math.round(p.x), y: Math.round(p.y), name: lt.name, type: lt.type });
   }
@@ -161,20 +163,69 @@ export function generateMap(seed: number): GeneratedMap {
     if (!found) break;
   }
 
-  // ── Gentle curves via perpendicular jitter ──
+  // ── Very gentle curve: one small via point keeps paths distinct ──
   const edges: GenEdge[] = segments.map(s => {
-    const via: { x: number; y: number }[] = [];
     const len = dist(s.a, s.b);
     const nx = -(s.b.y - s.a.y) / len, ny = (s.b.x - s.a.x) / len;
-    [0.35, 0.7].forEach(t => {
-      const off = (rng() - 0.5) * Math.min(120, len * 0.25);
-      via.push({
-        x: Math.round(s.a.x + (s.b.x - s.a.x) * t + nx * off),
-        y: Math.round(s.a.y + (s.b.y - s.a.y) * t + ny * off),
-      });
-    });
+    const off = (rng() - 0.5) * Math.min(90, len * 0.08);
+    const via = [{
+      x: Math.round(s.a.x + (s.b.x - s.a.x) * 0.5 + nx * off),
+      y: Math.round(s.a.y + (s.b.y - s.a.y) * 0.5 + ny * off),
+    }];
     return { a: s.a.id, b: s.b.id, via };
   });
 
-  return { seed, width, height, cities, intersections, lairs, edges };
+  // ── Resource nodes ──
+  const resources: GenResource[] = [];
+  let resId = 0;
+  const distToSegment = (p: { x: number; y: number }, a: GenNode, b: GenNode): number => {
+    const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+    if (l2 === 0) return dist(p, a);
+    let t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p.x - (a.x + t * (b.x - a.x)), p.y - (a.y + t * (b.y - a.y)));
+  };
+  const clearOfRoads = (p: { x: number; y: number }, min: number) =>
+    segments.every(s => distToSegment(p, s.a, s.b) >= min);
+  const clearOfResources = (p: { x: number; y: number }, min: number) =>
+    resources.every(r => Math.hypot(r.x - p.x, r.y - p.y) >= min);
+
+  const addCluster = (cx: number, cy: number, type: GenResource['type'], count: number, spread: number, amount: number) => {
+    for (let i = 0; i < count; i++) {
+      for (let a = 0; a < 12; a++) {
+        const p = { x: cx + (rng() - 0.5) * spread * 2, y: cy + (rng() - 0.5) * spread * 1.6 };
+        if (p.x < 120 || p.x > width - 120 || p.y < 120 || p.y > height - 120) continue;
+        if (!clearOfRoads(p, 80) || !clearOfResources(p, 56)) continue;
+        if (cities.some(c => dist(c, p) < 170)) continue;
+        if (lairs.some(l => dist(l, p) < 150)) continue;
+        resources.push({ id: `res_${resId++}`, type, x: Math.round(p.x), y: Math.round(p.y), amount });
+        break;
+      }
+    }
+  };
+
+  // Around each city: a forest, a sheep flock, and a gold deposit to farm
+  cities.forEach(c => {
+    const baseAngle = rng() * Math.PI * 2;
+    [0, 1, 2].forEach(k => {
+      const angle = baseAngle + (k * Math.PI * 2) / 3 + (rng() - 0.5) * 0.5;
+      const d = 230 + rng() * 130;
+      const cx = c.x + Math.cos(angle) * d;
+      const cy = c.y + Math.sin(angle) * d;
+      if (k === 0) addCluster(cx, cy, 'tree', 6 + Math.floor(rng() * 4), 150, 120);
+      if (k === 1) addCluster(cx, cy, 'sheep', 3 + Math.floor(rng() * 2), 110, 160);
+      if (k === 2) addCluster(cx, cy, 'gold', 2, 90, 320);
+    });
+  });
+  // Wild forests scattered across the map
+  for (let i = 0; i < 16; i++) {
+    const p = { x: 200 + rng() * (width - 400), y: 200 + rng() * (height - 400) };
+    if (cities.some(c => dist(c, p) < 500)) continue;
+    if (lairs.some(l => dist(l, p) < 300)) continue;
+    addCluster(p.x, p.y, 'tree', 4 + Math.floor(rng() * 5), 180, 120);
+    if (rng() < 0.3) addCluster(p.x + 150, p.y + 100, 'sheep', 2, 90, 160);
+    if (rng() < 0.2) addCluster(p.x - 150, p.y - 100, 'gold', 1, 60, 320);
+  }
+
+  return { seed, width, height, cities, intersections, lairs, edges, resources };
 }

@@ -30,7 +30,8 @@ FACTION_COLORS.forEach(c => {
 });
 troopSheets.push(
   { key: 'torch', url: `${A}/Factions/Goblins/Troops/Torch/Red/Torch_Red.png`, frameWidth: 192, frameHeight: 192 },
-  { key: 'barrel', url: `${A}/Factions/Goblins/Troops/Barrel/Purple/Barrel_Purple.png`, frameWidth: 192, frameHeight: 192 },
+  // Barrel uses 128px frames in a 6x6 grid (unlike the other troops)
+  { key: 'barrel', url: `${A}/Factions/Goblins/Troops/Barrel/Purple/Barrel_Purple.png`, frameWidth: 128, frameHeight: 128 },
 );
 
 export const SHEETS: SheetDef[] = [
@@ -78,7 +79,6 @@ const TROOP_ANIM: Record<string, { cols: number; idle: number; walk: number; att
   archer: { cols: 8, idle: 6, walk: 6, attack: 8 },
   pawn: { cols: 6, idle: 6, walk: 6, attack: 6 },
   torch: { cols: 7, idle: 7, walk: 6, attack: 6 },
-  barrel: { cols: 4, idle: 4, walk: 3, attack: 3 },
 };
 
 function rowAnim(scene: Phaser.Scene, key: string, sheet: string, row: number, cols: number, count: number, frameRate: number, repeat = -1): void {
@@ -102,6 +102,10 @@ export function createAnims(scene: Phaser.Scene): void {
       rowAnim(scene, `${sheet}_attack`, sheet, 2, def.cols, def.attack, 12);
     });
   });
+  // Barrel goblin: 6-col 128px grid — row 2 idle (out), row 4 hop, row 5 lit fuse
+  scene.anims.create({ key: 'barrel_idle', frames: scene.anims.generateFrameNumbers('barrel', { start: 12, end: 12 }), frameRate: 1, repeat: -1 });
+  scene.anims.create({ key: 'barrel_walk', frames: scene.anims.generateFrameNumbers('barrel', { start: 24, end: 26 }), frameRate: 8, repeat: -1 });
+  scene.anims.create({ key: 'barrel_attack', frames: scene.anims.generateFrameNumbers('barrel', { start: 30, end: 32 }), frameRate: 10, repeat: -1 });
   rowAnim(scene, 'foam_anim', 'foam', 0, 8, 8, 8);
   rowAnim(scene, 'rocks1_anim', 'rocks1', 0, 8, 8, 6);
   rowAnim(scene, 'rocks2_anim', 'rocks2', 0, 8, 8, 6);
@@ -116,6 +120,7 @@ export function createAnims(scene: Phaser.Scene): void {
 export function unitSkin(type: string, ownerHex: string | undefined): { sheet: string; tint?: number } {
   const c = factionOf(ownerHex);
   switch (type) {
+    case 'villager': return { sheet: `pawn_${c}` };
     case 'knight': return { sheet: `warrior_${c}` };
     case 'archer': return { sheet: `archer_${c}` };
     case 'lancer': return { sheet: `pawn_${c}` };

@@ -1,13 +1,13 @@
-// Headless smoke test against a procedurally generated map (fixed seed 16,
+﻿// Headless smoke test against a procedurally generated map (fixed seed 7,
 // which includes a crossroad). Usage: node client/scripts/smoke-test.mjs [ws://localhost:2567]
 import { Client } from 'colyseus.js';
 
 const url = process.argv[2] || 'ws://localhost:2567';
-const SEED = 16;
+const SEED = 7;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let failures = 0;
 function check(name, cond, detail = '') {
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? ` - ${detail}` : ''}`);
   if (!cond) failures++;
 }
 
@@ -39,10 +39,18 @@ let barracks = null;
 state.buildings.forEach(b => { if (b.cityId === me.connectedCityId && b.type === 'barracks') barracks = b; });
 check('barracks built', !!barracks);
 
+// Villager economy first: hire a woodcutter, expect a clear wood income jump
+check('resource nodes generated', state.resources.size > 50, `nodes=${state.resources.size}`);
+room.send('spawn_villager', { cityId: me.connectedCityId, resourceType: 'tree' });
+await sleep(500);
+let villager = null;
+state.units.forEach(u => { if (u.type === 'villager' && u.ownerId === room.sessionId) villager = u; });
+check('villager hired', !!villager);
+
 room.send('spawn_troops', { cityId: me.connectedCityId, type: 'knight' });
 await sleep(500);
 check('knight spawned', state.units.size >= 1, `units=${state.units.size}`);
-check('population used', me.populationUsed === 1, `popUsed=${me.populationUsed}`);
+check('population used (villager + knight)', me.populationUsed === 2, `popUsed=${me.populationUsed}`);
 
 let unit = null;
 state.units.forEach(u => { if (u.ownerId === room.sessionId) unit = u; });
@@ -67,6 +75,15 @@ check('unaffordable tech rejected', !me.researchedTechs.includes('prod_wood'), `
 room.send('set_auto_produce', { buildingId: barracks.id, troopType: 'lancer' });
 await sleep(300);
 check('auto-produce set', barracks.autoProduceType === 'lancer');
+
+// Villager should be harvesting by now (trickle is 1/s; villager adds ~3/s)
+let harvested = false;
+const woodAtHire = me.wood;
+for (let i = 1; i <= 60 && !harvested; i++) {
+  await sleep(1000);
+  if (me.wood > woodAtHire + i * 1.2 + 8) harvested = true;
+}
+check('villager harvesting wood', harvested, `wood ${Math.floor(woodAtHire)} -> ${Math.floor(me.wood)}`);
 
 // Troops must eventually besiege something (a neutral city or a lair)
 const cityHp0 = new Map();

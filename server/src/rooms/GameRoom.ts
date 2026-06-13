@@ -4,7 +4,8 @@ import { Player, TECH_TREE } from './schema/Player';
 import { CityNode } from './schema/CityNode';
 import { IntersectionNode, Waypoint } from './schema/IntersectionNode';
 import { Road } from './schema/Road';
-import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS, BUILDING_PRODUCTION } from './schema/BuildingNode';
+import { BuildingNode, BuildingType, BUILDING_TYPES, BUILDING_COSTS } from './schema/BuildingNode';
+import { ResourceNode, ResourceType, HARVEST_RATE } from './schema/ResourceNode';
 import { LairNode } from './schema/LairNode';
 import { UnitNode, TROOP_STATS, TROOP_TYPES, RPS_ADVANTAGE } from './schema/UnitNode';
 import { generateMap } from './MapGenerator';
@@ -23,6 +24,11 @@ const HEAL_INTERVAL_TICKS = 5;
 
 const SPIDER_BOUNTY = { wood: 0, food: 120, gold: 30 };
 const GOBLIN_BOUNTY = { wood: 0, food: 30, gold: 120 };
+
+const VILLAGER_COST_FOOD = 15;
+const VILLAGER_SPEED = 3.2;          // px per tick, walking off-road
+const VILLAGER_HARVEST_INTERVAL = 10; // ticks between harvest ticks
+const VILLAGER_SEARCH_RADIUS = 1400;  // from home city
 
 function buildSplinePoints(a: { x: number; y: number }, via: { x: number; y: number }[], b: { x: number; y: number }): { x: number; y: number }[] {
   const pts: { x: number; y: number }[] = [];
@@ -89,6 +95,9 @@ export class GameRoom extends Room<GameState> {
       const lair = this.state.lairs.get(e.a);
       if (lair) lair.roadId = fId;
     });
+    map.resources.forEach(r => {
+      this.state.resources.set(r.id, new ResourceNode(r.id, r.type, r.x, r.y, r.amount));
+    });
   }
 
   private getNodePos(id: string): { x: number; y: number } | null {
@@ -139,6 +148,24 @@ export class GameRoom extends Room<GameState> {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
       this.trySpawnTroop(player, msg.cityId || player.connectedCityId, msg.type);
+    });
+
+    this.onMessage('spawn_villager', (client, msg: { cityId: string; resourceType: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      if (!['tree', 'sheep', 'gold'].includes(msg.resourceType)) return;
+      const city = this.state.cities.get(msg.cityId);
+      if (!city || city.ownerId !== client.sessionId) return;
+      if (player.food < VILLAGER_COST_FOOD) return;
+      if (player.populationUsed + 1 > player.populationCap) return;
+      player.food -= VILLAGER_COST_FOOD;
+      player.populationUsed += 1;
+      const unit = new UnitNode(nextId('vil'), client.sessionId, 'villager', '');
+      unit.x = city.x; unit.y = city.y + 40;
+      unit.homeCityId = city.id;
+      unit.resourceType = msg.resourceType;
+      unit.status = 'marching';
+      this.state.units.set(unit.id, unit);
     });
 
     this.onMessage('set_auto_produce', (client, msg: { buildingId: string; troopType: string }) => {
@@ -238,6 +265,7 @@ export class GameRoom extends Room<GameState> {
     if (this.state.tick % ECONOMY_INTERVAL_TICKS === 0) this.processEconomy();
     this.processLairs();
     this.processAutoProduce();
+    this.processVillagers();
     this.moveUnits();
     this.processCombat();
     this.processSieges();
@@ -252,13 +280,12 @@ export class GameRoom extends Room<GameState> {
     this.state.cities.forEach(city => {
       if (!city.ownerId || !this.state.players.has(city.ownerId)) return;
       const acc = income.get(city.ownerId) || { w: 0, f: 0, g: 0, pop: 10 };
-      acc.w += city.townHallLevel * 2;
-      acc.f += city.townHallLevel;
-      acc.g += city.townHallLevel * 0.5;
+      // Small town-hall trickle; the real income comes from villagers
+      acc.w += city.townHallLevel;
+      acc.f += city.townHallLevel * 0.5;
+      acc.g += city.townHallLevel * 0.25;
       this.buildingsOf(city.id).forEach(b => {
-        const p = BUILDING_PRODUCTION[b.type as BuildingType];
-        if (p) { acc.w += p.woodPerTick; acc.f += p.foodPerTick; acc.g += p.goldPerTick; }
-        if (b.type === 'farm') acc.pop += 5;
+        if (b.type === 'house') acc.pop += 5;
       });
       income.set(city.ownerId, acc);
     });
@@ -337,11 +364,75 @@ export class GameRoom extends Room<GameState> {
     return bestCity;
   }
 
+  // ─── Villagers (off-road gatherers) ─────────────────────────
+
+  private processVillagers(): void {
+    this.state.units.forEach(unit => {
+      if (unit.type !== 'villager') return;
+      const player = this.state.players.get(unit.ownerId);
+      if (!player) { this.state.units.delete(unit.id); return; }
+      const home = this.state.cities.get(unit.homeCityId);
+
+      // (Re)acquire a target node
+      let target = unit.targetResourceId ? this.state.resources.get(unit.targetResourceId) : undefined;
+      if (!target || target.amount <= 0) {
+        unit.targetResourceId = '';
+        let best: ResourceNode | undefined;
+        let bestD = Infinity;
+        this.state.resources.forEach(r => {
+          if (r.type !== unit.resourceType || r.amount <= 0) return;
+          if (home && Math.hypot(r.x - home.x, r.y - home.y) > VILLAGER_SEARCH_RADIUS) return;
+          const d = Math.hypot(r.x - unit.x, r.y - unit.y);
+          if (d < bestD) { bestD = d; best = r; }
+        });
+        if (best) { unit.targetResourceId = best.id; target = best; }
+      }
+
+      if (!target) {
+        // Nothing left to gather: drift home and wait
+        unit.status = 'marching';
+        if (home) this.stepToward(unit, home.x, home.y + 50, VILLAGER_SPEED);
+        return;
+      }
+
+      const d = Math.hypot(target.x - unit.x, target.y - unit.y);
+      if (d > 28) {
+        unit.status = 'marching';
+        this.stepToward(unit, target.x, target.y + 14, VILLAGER_SPEED);
+        return;
+      }
+
+      // Working the node
+      unit.status = 'fighting'; // client plays the work/swing animation
+      if (this.state.tick % VILLAGER_HARVEST_INTERVAL === 0) {
+        const rate = HARVEST_RATE[target.type as ResourceType];
+        const take = Math.min(3, target.amount);
+        player.wood += rate.wood * take / 3;
+        player.food += rate.food * take / 3;
+        player.gold += rate.gold * take / 3;
+        target.amount -= take;
+        if (target.amount <= 0) {
+          this.state.resources.delete(target.id);
+          unit.targetResourceId = '';
+        }
+      }
+    });
+  }
+
+  private stepToward(unit: UnitNode, tx: number, ty: number, speed: number): void {
+    const d = Math.hypot(tx - unit.x, ty - unit.y);
+    if (d < 1) return;
+    const step = Math.min(speed, d);
+    unit.x += (tx - unit.x) / d * step;
+    unit.y += (ty - unit.y) / d * step;
+  }
+
   // ─── Movement ───────────────────────────────────────────────
 
   private moveUnits(): void {
     const toRemove: string[] = [];
     this.state.units.forEach(unit => {
+      if (unit.type === 'villager') return;
       if (unit.status === 'fighting' || unit.status === 'sieging' || unit.status === 'defending') return;
       const road = this.state.roads.get(unit.roadId);
       if (!road) { toRemove.push(unit.id); this.refundPop(unit.ownerId); return; }
@@ -487,6 +578,7 @@ export class GameRoom extends Room<GameState> {
 
     const groups = new Map<string, UnitNode[]>();
     this.state.units.forEach(u => {
+      if (u.type === 'villager') return; // gatherers don't fight
       const key = u.atNodeId ? `node:${u.atNodeId}` : `road:${this.pairKey(u.roadId)}`;
       const list = groups.get(key) || [];
       list.push(u);

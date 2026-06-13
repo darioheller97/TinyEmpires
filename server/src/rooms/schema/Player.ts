@@ -19,7 +19,7 @@ export class Player extends Schema {
   @type('string') name: string = 'unnamed';
   @type('string') colorHex: string = '#4488ff';
   @type('number') wood: number = 100;
-  @type('number') food: number = 50;
+  @type('number') food: number = 90;
   @type('number') gold: number = 20;
   @type('number') populationUsed: number = 0;
   @type('number') populationCap: number = 10;

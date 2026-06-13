@@ -35,9 +35,7 @@ const TECH_BTN: React.CSSProperties = {
 };
 
 const BUILD_OPTIONS: BuildOption[] = [
-  { type: 'lumber_mill', name: 'Lumber Mill', cost: { wood: 30, food: 5, gold: 0 } },
-  { type: 'farm', name: 'Farm', cost: { wood: 20, food: 0, gold: 0 } },
-  { type: 'gold_mine', name: 'Gold Mine', cost: { wood: 40, food: 10, gold: 0 } },
+  { type: 'house', name: 'House (+5 pop)', cost: { wood: 25, food: 10, gold: 0 } },
   { type: 'barracks', name: 'Barracks', cost: { wood: 50, food: 20, gold: 10 } },
   { type: 'defense_tower', name: 'Defense Tower', cost: { wood: 60, food: 15, gold: 20 } },
 ];
@@ -86,6 +84,9 @@ export default function App() {
   }, [selection]);
   const handleSetAutoProduce = useCallback((troopType: string) => {
     if (selection.type === 'building') client()?.setAutoProduce(selection.id, troopType);
+  }, [selection]);
+  const handleHireVillager = useCallback((resourceType: string) => {
+    if (selection.type === 'city') client()?.spawnVillager(selection.id, resourceType);
   }, [selection]);
   const handleResearch = useCallback((techId: string) => {
     client()?.researchTech(techId);
@@ -136,6 +137,7 @@ export default function App() {
             buildings={BUILD_OPTIONS}
             onBuild={handleBuild}
             onUpgradeTownHall={handleUpgradeTownHall}
+            onHireVillager={handleHireVillager}
           />
           <SpawnPanel
             visible={isBarracksSelected}

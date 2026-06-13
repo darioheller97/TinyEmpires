@@ -1,5 +1,5 @@
 import React from 'react';
-import { PANEL, BUTTON, BUTTON_DISABLED, BUTTON_RED, ICONS, RES_ICON } from './skin';
+import { PANEL, RIBBON, BUTTON, BUTTON_DISABLED, BUTTON_RED, ICONS, RES_ICON } from './skin';
 
 export interface SpawnOption {
   type: string;
@@ -56,7 +56,7 @@ export default function SpawnPanel({ visible, resources, autoProduceType, onSpaw
 
   return (
     <div style={WRAP}>
-      <div style={{ fontSize: '14px', marginBottom: '4px' }}>Barracks</div>
+      <div style={{ ...RIBBON, fontSize: '13px' }}>Barracks</div>
       <div style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px' }}>
         Pop {resources.popUsed}/{resources.popCap} · ⟳ auto-trains every 6s
       </div>

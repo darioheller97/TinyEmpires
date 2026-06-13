@@ -23,6 +23,7 @@ export const TROOP_STATS: Record<string, TroopStats> = {
   monk:   { health: 80,  speed: 0.007, attack: 3,  foodCost: 25, goldCost: 10, range: 40,  healAmount: 5 },
   goblin: { health: 60,  speed: 0.012, attack: 8,  foodCost: 0,  goldCost: 0,  range: 25,  healAmount: 0 },
   spider: { health: 80,  speed: 0.010, attack: 10, foodCost: 0,  goldCost: 0,  range: 30,  healAmount: 0 },
+  villager: { health: 40, speed: 0, attack: 0, foodCost: 15, goldCost: 0, range: 0, healAmount: 0 },
 };
 
 export const TROOP_NAMES: Record<string, string> = {
@@ -47,9 +48,17 @@ export class UnitNode extends Schema {
   // Node id a sieging/defending unit is parked at ('' while on the road)
   @type('string') atNodeId: string = '';
 
+  // Free-position coordinates (villagers walk off-road)
+  @type('number') x: number = 0;
+  @type('number') y: number = 0;
+
   lastCombatTick: number = 0;
   // PvE units head for this city
   targetNodeId: string = '';
+  // Villagers: home city, resource type, current target node
+  homeCityId: string = '';
+  resourceType: string = '';
+  targetResourceId: string = '';
 
   constructor(id: string, ownerId: string, type: string, roadId: string) {
     super();

@@ -6,6 +6,7 @@ import { Road } from './Road';
 import { LairNode } from './LairNode';
 import { BuildingNode } from './BuildingNode';
 import { UnitNode } from './UnitNode';
+import { ResourceNode } from './ResourceNode';
 
 export class GameState extends Schema {
   @type({ map: Player })
@@ -28,6 +29,9 @@ export class GameState extends Schema {
 
   @type({ map: UnitNode })
   units = new MapSchema<UnitNode>();
+
+  @type({ map: ResourceNode })
+  resources = new MapSchema<ResourceNode>();
 
   @type('number')
   tick: number = 0;
