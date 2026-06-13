@@ -158,6 +158,7 @@ export default class GameScene extends Phaser.Scene {
     while (time - this.beatClock >= BEAT_MS) {
       this.beatClock += BEAT_MS;
       playSfx('beat_drum', { volume: 0.7, throttleMs: 400, throttleKey: 'beat' });
+      this.swingCombatUnits(); // engaged units strike on the beat, with the drum
     }
 
     this.unitGfx.forEach(u => {
@@ -814,24 +815,35 @@ export default class GameScene extends Phaser.Scene {
   private syncUnit(unit: any): void {
     const pos = this.getUnitWorldPos(unit);
     const existing = this.unitGfx.get(unit.id);
-    let desiredAnim = unit.status === 'fighting' || unit.status === 'sieging'
-      ? 'attack' : unit.status === 'defending' ? 'idle' : 'walk';
+    const fighting = unit.status === 'fighting' || unit.status === 'sieging';
+    const isVillager = unit.type === 'villager';
+    let desiredAnim = fighting ? 'attack' : unit.status === 'defending' ? 'idle' : 'walk';
     // Villagers: tool matches the resource (pickaxe=gold, knife=sheep, axe=wood)
     // while working; while hauling home they carry the matching load.
-    if (unit.type === 'villager') {
+    if (isVillager) {
       const res = unit.resourceType; // 'tree' | 'sheep' | 'gold'
       if (unit.carrying > 0 && desiredAnim === 'walk') {
         desiredAnim = res === 'gold' ? 'carrygold' : res === 'sheep' ? 'carrymeat' : 'carrywood';
       } else if (desiredAnim === 'attack') {
         desiredAnim = res === 'gold' ? 'mine' : res === 'sheep' ? 'butcher' : 'attack';
       }
+    } else if (fighting) {
+      // Combatants strike once per beat (swingCombatUnits); between blows they
+      // hold an idle stance rather than looping the attack — looping read as a
+      // frantic, off-beat flurry (lancer/knight especially).
+      desiredAnim = 'idle';
     }
+    // A combatant's sprite is driven by the beat swing, not the status anim.
+    const combatant = fighting && !isVillager;
 
     if (existing) {
       if (pos) existing.container.setData('worldPos', pos);
       existing.container.setData('targetResourceId', unit.targetResourceId);
+      existing.container.setData('fighting', combatant);
       const animKey = `${existing.base}_${desiredAnim}`;
-      if (existing.anim !== animKey) {
+      // While a beat-swing is mid-play, leave the sprite to swingCombatUnits().
+      const midSwing = combatant && existing.anim === `${existing.base}_attack`;
+      if (!midSwing && existing.anim !== animKey) {
         existing.sprite.play(animKey);
         existing.anim = animKey;
       }
@@ -862,6 +874,7 @@ export default class GameScene extends Phaser.Scene {
     container.setData('ownerId', unit.ownerId);
     container.setData('isVillager', unit.type === 'villager');
     container.setData('unitType', unit.type);
+    container.setData('fighting', combatant);
     container.setData('targetResourceId', unit.targetResourceId);
     container.setDepth(DEPTH_ENTITY + pos.y * 0.01);
     // Click a pawn to flash the node it's currently gathering.
@@ -913,6 +926,24 @@ export default class GameScene extends Phaser.Scene {
     const spr = u.sprite;
     spr.setTintFill(0xffffff);
     this.time.delayedCall(90, () => { if (spr.active) spr.clearTint(); });
+  }
+
+  // On every beat, engaged combatants play exactly one attack swing, then settle
+  // back to idle — so strikes read in time with the march/drum instead of looping
+  // a frantic, off-beat flurry. The server already lands blows once per beat.
+  private swingCombatUnits(): void {
+    this.unitGfx.forEach(u => {
+      if (u.container.getData('fighting') !== true || !u.container.visible) return;
+      const attackKey = `${u.base}_attack`;
+      const anim = this.anims.get(attackKey);
+      if (!anim) return;
+      const frames = anim.frames.length || 4;
+      // Fit the whole swing into ~40% of the beat so it's a crisp single strike,
+      // then chain straight back to the idle stance until the next beat.
+      const frameRate = Math.max(6, Math.round(frames / 0.4));
+      u.sprite.play({ key: attackKey, repeat: 0, frameRate }).chain(`${u.base}_idle`);
+      u.anim = attackKey;
+    });
   }
 
   private removeUnitVisual(id: string, died: boolean): void {
