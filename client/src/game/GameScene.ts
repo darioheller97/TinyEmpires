@@ -60,6 +60,11 @@ export interface MinimapData {
 
 const DEPTH_ENTITY = 10; // + y*0.01 for painter's order
 
+// Mirror of the server's counter triangle (attacker type → the type it beats),
+// used client-side to emphasise favourable hits with extra juice. Kept in sync
+// with RPS_ADVANTAGE in server/src/rooms/schema/UnitNode.ts.
+const RPS_ADVANTAGE: Record<string, string> = { knight: 'archer', lancer: 'knight', archer: 'lancer' };
+
 interface UnitVisual {
   container: Phaser.GameObjects.Container;
   sprite: Phaser.GameObjects.Sprite;
@@ -112,6 +117,14 @@ export default class GameScene extends Phaser.Scene {
   private lastFogUpdate = 0;
   private cloudSprites: { sprite: Phaser.GameObjects.Sprite; tile: number }[] = [];
   private minimapRoads: { pts: { x: number; y: number }[] }[] | null = null;
+
+  // Juice bookkeeping: a startup grace window so the first state sync doesn't pop
+  // every existing unit/building; phase + tech diffing for level-up/win flourishes;
+  // and a per-area throttle so big melees don't spawn a storm of impact bursts.
+  private mapReadyAt = 0;
+  private prevPhase = '';
+  private myTechs: Set<string> | null = null;
+  private lastBurstAt: Map<string, number> = new Map();
 
   constructor() { super({ key: 'GameScene' }); }
 
@@ -270,6 +283,9 @@ export default class GameScene extends Phaser.Scene {
     const onMapBounds = this.game.registry.get('onMapBounds') as (b: { width: number; height: number }) => void;
     if (onMapBounds) onMapBounds({ width: this.mapW, height: this.mapH });
     this.mapBuilt = true;
+    // Grace window: suppress spawn/build pops for the initial flood of existing
+    // entities that arrive in the first state sync after the map is built.
+    this.mapReadyAt = this.time.now;
   }
 
   // ── Intersections + routing ───────────────────────────────
@@ -541,6 +557,11 @@ export default class GameScene extends Phaser.Scene {
     const entry = { gfx: container, data: { ...b } };
     container.on('pointerup', () => { if (!this.dragMoved) this.selectEntity('building', b.id, b.type, entry.data); });
     this.buildingGfx.set(b.id, entry);
+    // Build-complete pop for my own new buildings (skip the post-load flood).
+    if (city && city.data.ownerId === this.client?.sessionId && this.time.now - this.mapReadyAt > 1500) {
+      this.spawnPop(container, 1, b.x, b.y + 4);
+      playSfx('build_place', { volume: 0.45, throttleMs: 150, throttleKey: 'build', x: b.x, y: b.y });
+    }
   }
 
   // ── Lairs ──────────────────────────────────────────────────
@@ -840,6 +861,7 @@ export default class GameScene extends Phaser.Scene {
     container.setData('worldPos', pos);
     container.setData('ownerId', unit.ownerId);
     container.setData('isVillager', unit.type === 'villager');
+    container.setData('unitType', unit.type);
     container.setData('targetResourceId', unit.targetResourceId);
     container.setDepth(DEPTH_ENTITY + pos.y * 0.01);
     // Click a pawn to flash the node it's currently gathering.
@@ -848,6 +870,27 @@ export default class GameScene extends Phaser.Scene {
       container.on('pointerup', () => { if (!this.dragMoved) this.highlightVillagerResource(unit.id); });
     }
     this.unitGfx.set(unit.id, { container, sprite, hpBar, base: skin.base, anim: animKey });
+    // Spawn pop: my freshly-trained units scale in with a dust ring + chime
+    // (skip the initial flood of existing units right after the map builds).
+    if (unit.ownerId === this.client?.sessionId && this.time.now - this.mapReadyAt > 1500) {
+      this.spawnPop(sprite, skin.scale, pos.x, pos.y + 8);
+      playSfx('unit_recruit', { volume: 0.4, throttleMs: 120, throttleKey: 'recruit', x: pos.x, y: pos.y });
+    }
+  }
+
+  // Did the blow that just hit (defenderOwner/defenderType) come from a unit that
+  // counters it on the RPS triangle? Inferred from the nearest enemy in melee reach.
+  private isCounterHit(x: number, y: number, defenderOwner: string, defenderType: string): boolean {
+    if (!RPS_ADVANTAGE[defenderType] && defenderType !== 'knight' && defenderType !== 'archer' && defenderType !== 'lancer') return false;
+    let best = 72, attackerType = '';
+    this.unitGfx.forEach(u => {
+      if (!u.container.visible) return;
+      if ((u.container.getData('ownerId') as string) === defenderOwner) return;
+      if (u.container.getData('isVillager') === true) return;
+      const d = Math.hypot(u.container.x - x, u.container.y - y);
+      if (d < best) { best = d; attackerType = (u.container.getData('unitType') as string) || ''; }
+    });
+    return !!attackerType && RPS_ADVANTAGE[attackerType] === defenderType;
   }
 
   // Flash a ring around the resource node the clicked pawn is gathering.
@@ -918,7 +961,7 @@ export default class GameScene extends Phaser.Scene {
     this.tweens.add({
       targets: arrow, x: toX, y: toY,
       duration: Math.max(140, dist * 1.4), ease: 'Linear',
-      onComplete: () => arrow.destroy(),
+      onComplete: () => { arrow.destroy(); this.impactBurst(toX, toY, false); },
     });
   }
 
@@ -1006,15 +1049,106 @@ export default class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: [g, flag], alpha: 0, duration: 1400, ease: 'Power2', onComplete: () => { g.destroy(); flag.destroy(); } });
   }
 
-  private showFloatingDamage(x: number, y: number, amount: number, color: string = '#ff4444'): void {
+  private showFloatingDamage(x: number, y: number, amount: number, color: string = '#ff4444', big = false): void {
     const txt = this.add.text(x, y - 24, `-${amount}`, {
-      fontSize: '12px', color, fontFamily: 'monospace',
-      stroke: '#000', strokeThickness: 3, fontStyle: 'bold',
+      fontSize: big ? '18px' : '12px', color, fontFamily: 'monospace',
+      stroke: '#000', strokeThickness: big ? 4 : 3, fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(200);
+    if (big) {
+      txt.setScale(0.5);
+      this.tweens.add({ targets: txt, scale: 1, duration: 180, ease: 'Back.Out' });
+    }
     this.tweens.add({
-      targets: txt, y: y - 56, alpha: 0, duration: 800, ease: 'Power2',
+      targets: txt, y: y - (big ? 64 : 56), alpha: 0, duration: big ? 950 : 800, ease: 'Power2',
       onComplete: () => txt.destroy(),
     });
+  }
+
+  // ── Juice primitives ──────────────────────────────────────
+  // A quick spark burst at a clash point: an expanding ring + a few radiating
+  // spark lines. `strong` (a counter-advantage hit) makes it bigger and gold.
+  // Throttled per rounded tile so a packed melee never spawns a storm of these.
+  private impactBurst(x: number, y: number, strong = false): void {
+    const key = `${Math.round(x / 48)},${Math.round(y / 48)}`;
+    const now = this.time.now;
+    if (now - (this.lastBurstAt.get(key) ?? -1e9) < 110) return;
+    this.lastBurstAt.set(key, now);
+    const v = this.cameras.main.worldView;
+    if (x < v.x - 80 || x > v.right + 80 || y < v.y - 80 || y > v.bottom + 80) return;
+    const colour = strong ? 0xffd54a : 0xffffff;
+    const n = strong ? 6 : 4;
+    const len = strong ? 22 : 14;
+    const g = this.add.graphics().setDepth(201);
+    const a0 = Math.random() * Math.PI;
+    const st = { r: strong ? 8 : 5, a: 1 };
+    this.tweens.add({
+      targets: st, r: strong ? 40 : 26, a: 0, duration: strong ? 240 : 190, ease: 'Cubic.Out',
+      onUpdate: () => {
+        g.clear();
+        g.lineStyle(strong ? 3 : 2, colour, st.a);
+        g.strokeCircle(x, y, st.r);
+        for (let i = 0; i < n; i++) {
+          const ang = a0 + (i / n) * Math.PI * 2;
+          const r1 = st.r, r2 = st.r + len * st.a;
+          g.lineBetween(x + Math.cos(ang) * r1, y + Math.sin(ang) * r1, x + Math.cos(ang) * r2, y + Math.sin(ang) * r2);
+        }
+      },
+      onComplete: () => g.destroy(),
+    });
+  }
+
+  // A small recoil twitch on the unit's sprite (not its container, so it never
+  // fights the beat-hop positioning). Pushes opposite the way it's facing.
+  private recoilUnit(id: string): void {
+    const u = this.unitGfx.get(id);
+    if (!u || !u.container.visible) return;
+    const spr = u.sprite;
+    const dir = spr.flipX ? 1 : -1; // facing left ⇒ recoil right
+    const baseX = (spr.getData('baseX') as number) ?? spr.x;
+    spr.setData('baseX', baseX);
+    this.tweens.killTweensOf(spr);
+    this.tweens.add({ targets: spr, x: baseX + dir * 5, duration: 70, yoyo: true, ease: 'Quad.Out',
+      onComplete: () => { if (spr.active) spr.x = baseX; } });
+  }
+
+  // A soft dust ring at ground level (unit spawn / building raise).
+  private dustRing(x: number, y: number): void {
+    const g = this.add.graphics().setDepth(DEPTH_ENTITY + y * 0.01 - 0.1);
+    const st = { r: 6, a: 0.7 };
+    this.tweens.add({
+      targets: st, r: 26, a: 0, duration: 360, ease: 'Cubic.Out',
+      onUpdate: () => { g.clear(); g.lineStyle(3, 0xe8dcc0, st.a).strokeEllipse(x, y + 8, st.r * 2, st.r); },
+      onComplete: () => g.destroy(),
+    });
+  }
+
+  // A celebratory expanding sparkle ring in a player's colour (level-up, tech).
+  private sparkleRing(x: number, y: number, colorHex: string): void {
+    const tint = Phaser.Display.Color.HexStringToColor(colorHex || '#ffe87a').color;
+    const g = this.add.graphics().setDepth(206);
+    const st = { r: 14, a: 1 };
+    this.tweens.add({
+      targets: st, r: 90, a: 0, duration: 620, ease: 'Cubic.Out',
+      onUpdate: () => { g.clear(); g.lineStyle(4, tint, st.a).strokeCircle(x, y, st.r); },
+      onComplete: () => g.destroy(),
+    });
+    // A few rising sparks.
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2;
+      const s = this.add.graphics().setDepth(207);
+      s.fillStyle(0xfff2ad, 1).fillCircle(0, 0, 2.5);
+      s.setPosition(x + Math.cos(ang) * 12, y + Math.sin(ang) * 12);
+      this.tweens.add({ targets: s, x: x + Math.cos(ang) * 60, y: y + Math.sin(ang) * 60 - 20, alpha: 0,
+        duration: 600, ease: 'Cubic.Out', onComplete: () => s.destroy() });
+    }
+  }
+
+  // Spawn-in pop: a new unit/building scales up from small with a dust ring.
+  private spawnPop(target: Phaser.GameObjects.GameObject & { setScale: (n: number) => any; scale: number }, finalScale: number, x: number, y: number): void {
+    (target as any).setScale(finalScale * 0.45);
+    (target as any).setAlpha?.(0.6);
+    this.tweens.add({ targets: target, scale: finalScale, alpha: 1, duration: 230, ease: 'Back.Out' });
+    this.dustRing(x, y);
   }
 
   /** Shake the camera, but only when the event is on (or near) screen. */
@@ -1064,9 +1198,67 @@ export default class GameScene extends Phaser.Scene {
       onComplete: () => banner.destroy(),
     });
 
+    // Flag-raise: a pennant in the new owner's colour climbs the keep and waves.
+    const flag = this.add.graphics().setDepth(211);
+    const drawFlag = (wave: number) => {
+      flag.clear();
+      flag.lineStyle(3, 0x3a2a14, 1).lineBetween(0, 0, 0, -34);          // pole
+      flag.fillStyle(tint, 1);
+      flag.fillTriangle(0, -34, 26 + wave, -28, 0, -20);                  // pennant
+    };
+    drawFlag(0);
+    flag.setPosition(x, y - 6).setScale(1, 0); // rolled up, unfurls upward
+    this.tweens.add({ targets: flag, scaleY: 1, duration: 320, ease: 'Back.Out' });
+    let waveT = 0;
+    const waveEv = this.time.addEvent({ delay: 90, loop: true, callback: () => { waveT++; drawFlag(Math.sin(waveT * 0.6) * 4); } });
+    this.tweens.add({ targets: flag, alpha: 0, delay: 1600, duration: 600,
+      onComplete: () => { waveEv.remove(); flag.destroy(); } });
+
     this.shakeAt(x, y, mine ? 0.008 : 0.006, 380);
     playSfx('building_destroyed', { volume: 0.5, x, y });
     playSfx(mine ? 'unit_recruit' : 'coins_gold', { volume: 0.6, x, y });
+  }
+
+  // Win moment: a camera zoom-punch, fireworks across the view, and a confetti
+  // shower — only fired for the local winner. Defeat gets a brief dark dim.
+  private victoryCelebration(won: boolean): void {
+    const cam = this.cameras.main;
+    if (!won) {
+      cam.flash(600, 10, 10, 16); // brief dark wash
+      return;
+    }
+    const z0 = cam.zoom;
+    this.tweens.add({ targets: cam, zoom: z0 * 1.12, duration: 220, yoyo: true, ease: 'Quad.Out' });
+    const myHex = this.client?.sessionId ? (this.playerColors.get(this.client.sessionId) || '#ffe87a') : '#ffe87a';
+    const palette = ['#ffe87a', '#ff7a7a', '#7ad1ff', '#9cff7a', myHex];
+    const v = cam.worldView;
+    // Staggered firework bursts.
+    for (let i = 0; i < 9; i++) {
+      this.time.delayedCall(i * 260, () => {
+        const fx = v.x + 60 + Math.random() * (v.width - 120);
+        const fy = v.y + 50 + Math.random() * (v.height * 0.55);
+        this.sparkleRing(fx, fy, Phaser.Utils.Array.GetRandom(palette));
+        if (this.textures.exists('explosion')) {
+          const boom = this.add.sprite(fx, fy, 'explosion').setScale(0.9 + Math.random() * 0.5).setDepth(208)
+            .setTint(Phaser.Display.Color.HexStringToColor(Phaser.Utils.Array.GetRandom(palette)).color);
+          boom.play('explosion_anim');
+          boom.once('animationcomplete', () => boom.destroy());
+        }
+      });
+    }
+    // Confetti shower from the top of the view.
+    for (let i = 0; i < 40; i++) {
+      const cx = v.x + Math.random() * v.width;
+      const cy = v.y - 20 - Math.random() * 60;
+      const rect = this.add.rectangle(cx, cy, 5, 9, Phaser.Display.Color.HexStringToColor(Phaser.Utils.Array.GetRandom(palette)).color)
+        .setDepth(209).setAngle(Math.random() * 360);
+      this.tweens.add({
+        targets: rect, y: cy + v.height + 80, angle: rect.angle + 360 + Math.random() * 360,
+        x: cx + (Math.random() - 0.5) * 120, duration: 2200 + Math.random() * 1400, delay: Math.random() * 700,
+        ease: 'Quad.In', onComplete: () => rect.destroy(),
+      });
+    }
+    playSfx('victory', { volume: 0.5 });
   }
 
   // ── Selection ──────────────────────────────────────────────
@@ -1302,6 +1494,7 @@ export default class GameScene extends Phaser.Scene {
       if (!entry) return;
       const prevHealth = entry.data.health;
       const prevOwner = entry.data.ownerId;
+      const prevLevel = entry.data.townHallLevel;
       // A fort changed hands — celebrate (or mourn) it.
       if (prevOwner !== s.ownerId) {
         const newReal = s.ownerId && s.ownerId !== 'pve';
@@ -1309,6 +1502,11 @@ export default class GameScene extends Phaser.Scene {
         const involved = (!!myId && (s.ownerId === myId || prevOwner === myId));
         const color = newReal ? (this.playerColors.get(s.ownerId) || '#cccccc') : '#9aa3ad';
         this.captureFlourish(entry.data.x, entry.data.y, color, mine, involved);
+      }
+      // Town-hall level-up flourish for my own keep.
+      if (myId && s.townHallLevel > prevLevel && s.ownerId === myId && this.time.now - this.mapReadyAt > 1500) {
+        this.sparkleRing(entry.data.x, entry.data.y - 10, this.playerColors.get(myId) || '#ffe87a');
+        playSfx('coins_gold', { volume: 0.5, x: entry.data.x, y: entry.data.y });
       }
       entry.data.ownerId = s.ownerId;
       entry.data.townHallLevel = s.townHallLevel;
@@ -1374,8 +1572,13 @@ export default class GameScene extends Phaser.Scene {
       const prevHp = this.prevUnitHealth.get(u.id) ?? u.maxHealth;
       if (prevHp > u.health) {
         const pos = this.getUnitWorldPos(u);
-        if (pos) this.showFloatingDamage(pos.x, pos.y, prevHp - u.health);
+        if (pos) {
+          const counter = this.isCounterHit(pos.x, pos.y, u.ownerId, u.type);
+          this.showFloatingDamage(pos.x, pos.y, prevHp - u.health, counter ? '#ffd54a' : '#ff4444', counter);
+          this.impactBurst(pos.x, pos.y, counter);
+        }
         this.flashUnit(u.id);
+        this.recoilUnit(u.id);
       }
       this.prevUnitHealth.set(u.id, u.health);
       this.syncUnit(u);
@@ -1397,11 +1600,33 @@ export default class GameScene extends Phaser.Scene {
           wood: me.wood, food: me.food, gold: me.gold,
           popUsed: me.populationUsed, popCap: me.populationCap,
         });
+        const techs = me.researchedTechs ? me.researchedTechs.split(',').filter(Boolean) : [];
         const onTechsUpdate = this.game.registry.get('onTechsUpdate') as ((t: string[]) => void) | undefined;
-        if (onTechsUpdate) {
-          onTechsUpdate(me.researchedTechs ? me.researchedTechs.split(',') : []);
+        if (onTechsUpdate) onTechsUpdate(techs);
+        // Research-complete sparkle on my capital for each newly-finished tech
+        // (seed the set on first sight so the initial load doesn't fire).
+        if (this.myTechs === null) {
+          this.myTechs = new Set(techs);
+        } else {
+          const fresh = techs.filter((t: string) => !this.myTechs!.has(t));
+          if (fresh.length) {
+            fresh.forEach((t: string) => this.myTechs!.add(t));
+            const home = [...this.cityGfx.values()].find(e => e.data.ownerId === myId);
+            if (home) {
+              this.sparkleRing(home.data.x, home.data.y - 10, this.playerColors.get(myId) || '#9cff7a');
+              playSfx('coins_gold', { volume: 0.45, x: home.data.x, y: home.data.y });
+            }
+          }
         }
       }
+    }
+
+    // Match end: fireworks for the winner, a brief dark wash for the loser.
+    if (state.phase && state.phase !== this.prevPhase) {
+      if (state.phase === 'finished' && this.prevPhase === 'active') {
+        this.victoryCelebration(!!myId && state.winnerId === myId);
+      }
+      this.prevPhase = state.phase;
     }
 
     this.updateFog(state);
