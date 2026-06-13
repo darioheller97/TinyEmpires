@@ -79,9 +79,9 @@ export const BUTTON_DISABLED: React.CSSProperties = {
 };
 
 export const ICONS = {
-  wood: '/assets/Resources/Resources/W_Idle_(NoShadow).png',
-  food: '/assets/Resources/Resources/M_Idle_(NoShadow).png',
-  gold: '/assets/Resources/Resources/G_Idle_(NoShadow).png',
+  wood: `${U}/res_wood.png`,
+  food: `${U}/res_food.png`,
+  gold: `${U}/res_gold.png`,
 };
 
 export const RES_ICON: React.CSSProperties = {
