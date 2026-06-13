@@ -227,6 +227,7 @@ export class GameRoom extends Room<GameState> {
       const { x: bx, y: by } = this.findBuildSpot(city, count);
       const bId = nextId('bld');
       this.state.buildings.set(bId, new BuildingNode(bId, city.id, bt, bx, by));
+      this.recomputeInfluence(city);
     });
 
     // Towers are placed by the player anywhere inside the city's influence.
@@ -236,16 +237,20 @@ export class GameRoom extends Room<GameState> {
       const city = this.state.cities.get(msg?.cityId);
       if (!city || city.ownerId !== client.sessionId) return;
       if (this.buildingsOf(city.id).length >= city.maxBuildings) return;
-      const x = msg.x, y = msg.y;
-      if (typeof x !== 'number' || typeof y !== 'number') return;
-      // Must be inside the influence ring and on a clear grass plot.
-      if (Math.hypot(city.x - x, city.y - y) > city.influenceRadius) return;
+      if (typeof msg.x !== 'number' || typeof msg.y !== 'number') return;
+      // Snap to the centre of the clicked tile so towers sit on the grid.
+      const T = 64;
+      const x = (Math.floor(msg.x / T) + 0.5) * T;
+      const y = (Math.floor(msg.y / T) + 0.5) * T;
+      // Towers reach 30% beyond the fort's influence; must land on a clear plot.
+      if (Math.hypot(city.x - x, city.y - y) > city.influenceRadius * 1.3) return;
       if (this.spotBlocked(x, y, city)) return;
       const cost = BUILDING_COSTS['defense_tower' as BuildingType];
       if (player.wood < cost.wood || player.food < cost.food || player.gold < cost.gold) return;
       player.wood -= cost.wood; player.food -= cost.food; player.gold -= cost.gold;
       const bId = nextId('bld');
       this.state.buildings.set(bId, new BuildingNode(bId, city.id, 'defense_tower', x, y));
+      this.recomputeInfluence(city);
     });
 
     this.onMessage('upgrade_town_hall', (client, msg: { cityId: string }) => {
@@ -258,7 +263,7 @@ export class GameRoom extends Room<GameState> {
       if (player.gold < cost) return;
       player.gold -= cost;
       city.townHallLevel++;
-      city.influenceRadius = 150 + (city.townHallLevel - 1) * 40;
+      this.recomputeInfluence(city);
       city.maxBuildings = 2 + (city.townHallLevel - 1);
       city.maxHealth = 1000 + (city.townHallLevel - 1) * 500;
       city.health = city.maxHealth;
@@ -1170,5 +1175,12 @@ export class GameRoom extends Room<GameState> {
     const r: BuildingNode[] = [];
     this.state.buildings.forEach(b => { if (b.cityId === cityId) r.push(b); });
     return r;
+  }
+
+  // Influence (and thus build range) grows with the town-hall level and with
+  // every building/tower the player raises — a bigger settlement projects
+  // further. Towers may be placed out to 1.3× this radius.
+  private recomputeInfluence(city: CityNode): void {
+    city.influenceRadius = 150 + (city.townHallLevel - 1) * 40 + this.buildingsOf(city.id).length * 16;
   }
 }

@@ -74,7 +74,7 @@ export default class GameScene extends Phaser.Scene {
   private selectionRing: Phaser.GameObjects.Graphics | null = null;
   private glowTarget: Phaser.GameObjects.Container | null = null;
   private glowTween: Phaser.Tweens.Tween | null = null;
-  private towerPlace: { cityId: string; cx: number; cy: number; radius: number; ghost: Phaser.GameObjects.Container; tower: Phaser.GameObjects.Image; ring: Phaser.GameObjects.Graphics } | null = null;
+  private towerPlace: { cityId: string; cx: number; cy: number; radius: number; ghost: Phaser.GameObjects.Container; tower: Phaser.GameObjects.Image; ring: Phaser.GameObjects.Graphics; highlight: Phaser.GameObjects.Graphics } | null = null;
   private routeArrowGfx: Phaser.GameObjects.Graphics | null = null;
 
   private selection: SelectionInfo = { type: 'none', id: '', name: '' };
@@ -365,11 +365,13 @@ export default class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     // Two defending archers on the battlements (they do the fort's damage).
-    // Sized to match field units (0.62) and seated on the bigger towers.
+    // Sized to match field units (0.62) and seated on the corner towers. Shown
+    // on every fort — greyed out on a neutral fort, coloured once claimed.
     const acolor = city.ownerId ? factionOf(this.playerColors.get(city.ownerId)) : 'Blue';
-    const arL = this.add.sprite(-54, -58, `u_${acolor}_archer_idle`).setScale(0.62).setVisible(!!city.ownerId);
-    const arR = this.add.sprite(54, -58, `u_${acolor}_archer_idle`).setScale(0.62).setFlipX(true).setVisible(!!city.ownerId);
-    if (city.ownerId) { arL.play(`u_${acolor}_archer_idle`); arR.play(`u_${acolor}_archer_idle`); }
+    const arL = this.add.sprite(-74, -56, `u_${acolor}_archer_idle`).setScale(0.62);
+    const arR = this.add.sprite(74, -56, `u_${acolor}_archer_idle`).setScale(0.62).setFlipX(true);
+    arL.play(`u_${acolor}_archer_idle`); arR.play(`u_${acolor}_archer_idle`);
+    if (!city.ownerId) { arL.setTint(0x8f9aa6); arR.setTint(0x8f9aa6); }
     container.add([influence, castle, fire, fire2, nameLabel, levelLabel, arL, arR]);
     container.setDepth(DEPTH_ENTITY + city.y * 0.01);
     container.setInteractive(new Phaser.Geom.Rectangle(-108, -118, 216, 200), Phaser.Geom.Rectangle.Contains);
@@ -394,9 +396,9 @@ export default class GameScene extends Phaser.Scene {
     [6, 7].forEach(i => {
       const ar = gfx.getAt(i) as Phaser.GameObjects.Sprite | undefined;
       if (!ar) return;
-      ar.setVisible(!!data.ownerId);
+      ar.setTint(data.ownerId ? 0xffffff : 0x8f9aa6); // grey while neutral
       const akey = `u_${acolor}_archer_idle`;
-      if (data.ownerId && ar.anims.currentAnim?.key !== akey) ar.play(akey);
+      if (ar.anims.currentAnim?.key !== akey) ar.play(akey);
     });
     this.updateBar(this.cityHealthBars, data.id, data.x, data.y + 104, 92, data.health, data.maxHealth, true);
   }
@@ -819,8 +821,8 @@ export default class GameScene extends Phaser.Scene {
       const color = factionOf(this.playerColors.get(e.data.ownerId));
       this.playShoot(e.gfx.getAt(6) as Phaser.GameObjects.Sprite, color);
       this.playShoot(e.gfx.getAt(7) as Phaser.GameObjects.Sprite, color);
-      this.fireArrow(e.data.x - 54, e.data.y - 58, target.x, target.y, color);
-      this.fireArrow(e.data.x + 54, e.data.y - 58, target.x, target.y, color);
+      this.fireArrow(e.data.x - 74, e.data.y - 56, target.x, target.y, color);
+      this.fireArrow(e.data.x + 74, e.data.y - 56, target.x, target.y, color);
     });
     // Defense towers: single archer on top.
     this.buildingGfx.forEach(e => {
@@ -1012,8 +1014,9 @@ export default class GameScene extends Phaser.Scene {
       if (this.dragMoved) return;
       if (this.towerPlace) {
         const w = this.cameras.main.getWorldPoint(p.x, p.y);
-        if (this.towerSpotValid(w.x, w.y)) {
-          this.client?.placeTower(this.towerPlace.cityId, w.x, w.y);
+        const s = this.snapTile(w.x, w.y);
+        if (this.towerSpotValid(s.x, s.y)) {
+          this.client?.placeTower(this.towerPlace.cityId, s.x, s.y);
           playSfx('build_place', { volume: 0.55 });
           this.cancelTowerPlacement();
         }
@@ -1032,11 +1035,19 @@ export default class GameScene extends Phaser.Scene {
     this.cancelTowerPlacement();
     const d = city.data;
     const color = factionOf(this.playerColors.get(d.ownerId));
+    // Towers reach 30% beyond the fort's influence ring (mirrors the server).
+    const radius = d.influenceRadius * 1.3;
     const ring = this.add.graphics().setDepth(195);
-    ring.lineStyle(3, 0xffe87a, 0.85).strokeCircle(d.x, d.y, d.influenceRadius);
+    ring.lineStyle(3, 0xffe87a, 0.85).strokeCircle(d.x, d.y, radius);
+    const highlight = this.add.graphics().setDepth(195.5);
     const tower = this.add.image(0, 0, `tower2_${color}`).setScale(0.5).setOrigin(0.5, 0.72).setAlpha(0.75);
     const ghost = this.add.container(d.x, d.y, [tower]).setDepth(196);
-    this.towerPlace = { cityId, cx: d.x, cy: d.y, radius: d.influenceRadius, ghost, tower, ring };
+    this.towerPlace = { cityId, cx: d.x, cy: d.y, radius, ghost, tower, ring, highlight };
+  }
+
+  // Snap a world point to the centre of its terrain tile.
+  private snapTile(x: number, y: number): { x: number; y: number } {
+    return { x: (Math.floor(x / TILE) + 0.5) * TILE, y: (Math.floor(y / TILE) + 0.5) * TILE };
   }
 
   private towerSpotValid(x: number, y: number): boolean {
@@ -1050,14 +1061,23 @@ export default class GameScene extends Phaser.Scene {
   private updateTowerGhost(p: Phaser.Input.Pointer): void {
     if (!this.towerPlace) return;
     const w = this.cameras.main.getWorldPoint(p.x, p.y);
-    this.towerPlace.ghost.setPosition(w.x, w.y);
-    this.towerPlace.tower.setTint(this.towerSpotValid(w.x, w.y) ? 0xffffff : 0xff6666);
+    const s = this.snapTile(w.x, w.y);
+    this.towerPlace.ghost.setPosition(s.x, s.y);
+    const ok = this.towerSpotValid(s.x, s.y);
+    this.towerPlace.tower.setTint(ok ? 0xffffff : 0xff6666);
+    // Outline the target tile so placement reads as grid-snapped, not free.
+    const hl = this.towerPlace.highlight;
+    hl.clear();
+    hl.lineStyle(2, ok ? 0x7CFC00 : 0xff6666, 0.95).fillStyle(ok ? 0x7CFC00 : 0xff6666, 0.18);
+    hl.fillRect(s.x - TILE / 2, s.y - TILE / 2, TILE, TILE);
+    hl.strokeRect(s.x - TILE / 2, s.y - TILE / 2, TILE, TILE);
   }
 
   private cancelTowerPlacement(): void {
     if (!this.towerPlace) return;
     this.towerPlace.ghost.destroy();
     this.towerPlace.ring.destroy();
+    this.towerPlace.highlight.destroy();
     this.towerPlace = null;
   }
 
