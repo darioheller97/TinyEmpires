@@ -56,6 +56,8 @@ export class UnitNode extends Schema {
   @type('string') resourceType: string = '';
 
   lastCombatTick: number = 0;
+  // Movement accumulator for beat-stepped road travel (server only)
+  moveAcc: number = 0;
   // PvE units head for this city
   targetNodeId: string = '';
   // Villagers: home city, current target node

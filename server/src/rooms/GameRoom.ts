@@ -21,7 +21,6 @@ const PVE_SPAWN_INTERVAL = 450;      // 45s between lair waves
 const PVE_FIRST_WAVE_TICK = 1800;    // 3 min of peace before monsters stir
 const PVE_MAX_ALIVE_PER_LAIR = 5;
 const LAIR_RESPAWN_TICKS = 1800;     // destroyed lairs regrow after 3 min
-const ENGAGE_RANGE_T = 0.04;         // engagement distance along a road
 const HEAL_INTERVAL_TICKS = 5;
 
 const SPIDER_BOUNTY = { wood: 0, food: 120, gold: 30 };
@@ -55,6 +54,8 @@ export class GameRoom extends Room<GameState> {
   private tickInterval!: ReturnType<typeof setInterval>;
   // Maps each directed road to its opposite-direction twin
   private reverseRoad = new Map<string, string>();
+  // Tile slots per physical road (keyed by pairKey)
+  private pairSlots = new Map<string, number>();
 
   onCreate(options: any): void {
     console.log('GameRoom created!');
@@ -97,6 +98,10 @@ export class GameRoom extends Room<GameState> {
       this.state.roads.set(rId, new Road(rId, e.b, e.a, rev));
       this.reverseRoad.set(fId, rId);
       this.reverseRoad.set(rId, fId);
+      // One walkable tile slot per ~56px of road
+      let len = 0;
+      for (let p = 1; p < fwd.length; p++) len += Math.hypot(fwd[p].x - fwd[p - 1].x, fwd[p].y - fwd[p - 1].y);
+      this.pairSlots.set(fId < rId ? fId : rId, Math.max(3, Math.round(len / 56)));
       const lair = this.state.lairs.get(e.a);
       if (lair) lair.roadId = fId;
     });
@@ -225,6 +230,7 @@ export class GameRoom extends Room<GameState> {
     if (!barracks) return false;
     const targetRoad = [...this.state.roads.values()].find(r => r.fromId === city.id);
     if (!targetRoad) return false;
+    if (!this.isSlotFree(targetRoad.id, 0)) return false; // exit tile occupied
     player.food -= stats.foodCost; player.gold -= stats.goldCost;
     player.populationUsed += 1;
     const unit = new UnitNode(nextId('unit'), player.id, type, targetRoad.id);
@@ -350,12 +356,13 @@ export class GameRoom extends Room<GameState> {
       if (!targetCityId) return;
 
       const count = 2 + Math.floor(Math.random() * 2);
+      const slots = this.slotsOf(lair.roadId);
       for (let i = 0; i < count; i++) {
+        if (!this.isSlotFree(lair.roadId, i)) continue; // tile taken
         const unit = new UnitNode(nextId('pve'), 'pve', lair.type, lair.roadId);
         unit.originNodeId = lair.id;
         unit.targetNodeId = targetCityId;
-        // Stagger so the pack doesn't stack on one pixel
-        unit.t = -i * 0.03;
+        unit.t = i / slots; // one per tile, marching out in file
         this.state.units.set(unit.id, unit);
       }
     });
@@ -398,20 +405,18 @@ export class GameRoom extends Room<GameState> {
         if (best) { unit.targetResourceId = best.id; target = best; }
       }
 
-      const onBeat = this.state.tick % MOVE_BEAT_TICKS === 0;
-      const stepLen = VILLAGER_SPEED * MOVE_BEAT_TICKS;
-
+      // Villagers walk smoothly (no marching beat)
       if (!target) {
         // Nothing left to gather: drift home and wait
         unit.status = 'marching';
-        if (home && onBeat) this.stepToward(unit, home.x, home.y + 50, stepLen);
+        if (home) this.stepToward(unit, home.x, home.y + 50, VILLAGER_SPEED);
         return;
       }
 
       const d = Math.hypot(target.x - unit.x, target.y - unit.y);
       if (d > 28) {
         unit.status = 'marching';
-        if (onBeat) this.stepToward(unit, target.x, target.y + 14, stepLen);
+        this.stepToward(unit, target.x, target.y + 14, VILLAGER_SPEED);
         return;
       }
 
@@ -442,44 +447,98 @@ export class GameRoom extends Room<GameState> {
 
   // ─── Movement ───────────────────────────────────────────────
 
+  private slotsOf(roadId: string): number {
+    return this.pairSlots.get(this.pairKey(roadId)) || 12;
+  }
+
+  private isSlotFree(roadId: string, slot: number): boolean {
+    const key = this.canonSlotKey(roadId, slot);
+    let free = true;
+    this.state.units.forEach(u => {
+      if (u.type === 'villager' || u.atNodeId) return;
+      if (this.pairKey(u.roadId) !== this.pairKey(roadId)) return;
+      const s = Math.round(u.t * this.slotsOf(u.roadId));
+      if (this.canonSlotKey(u.roadId, s) === key) free = false;
+    });
+    return free;
+  }
+
+  /** Slot index in the canonical (pair-shared) frame for occupancy checks. */
+  private canonSlotKey(roadId: string, slot: number): string {
+    const key = this.pairKey(roadId);
+    const slots = this.pairSlots.get(key) || 12;
+    const canon = roadId === key ? slot : slots - slot;
+    return `${key}:${canon}`;
+  }
+
+  /** Beat-stepped, tile-based road movement: one unit per tile. */
   private moveUnits(): void {
-    // March to the beat: discrete steps on a shared rhythm
     if (this.state.tick % MOVE_BEAT_TICKS !== 0) return;
     const toRemove: string[] = [];
-    this.state.units.forEach(unit => {
-      if (unit.type === 'villager') return;
-      if (unit.status === 'fighting' || unit.status === 'sieging' || unit.status === 'defending') return;
+
+    // Occupancy of road tiles by canonical slot
+    const occ = new Map<string, string>();
+    const roadUnits: UnitNode[] = [];
+    this.state.units.forEach(u => {
+      if (u.type === 'villager' || u.atNodeId) return;
+      const slots = this.slotsOf(u.roadId);
+      occ.set(this.canonSlotKey(u.roadId, Math.round(u.t * slots)), u.id);
+      roadUnits.push(u);
+    });
+    // Front units step first so columns flow instead of accordioning
+    roadUnits.sort((a, b) => b.t - a.t);
+
+    for (const unit of roadUnits) {
+      if (unit.status === 'fighting' || unit.status === 'sieging' || unit.status === 'defending') continue;
       const road = this.state.roads.get(unit.roadId);
-      if (!road) { toRemove.push(unit.id); this.refundPop(unit.ownerId); return; }
+      if (!road) { toRemove.push(unit.id); this.refundPop(unit.ownerId); continue; }
       const stats = TROOP_STATS[unit.type];
-      if (!stats) { toRemove.push(unit.id); return; }
+      if (!stats) { toRemove.push(unit.id); continue; }
 
       let speed = stats.speed * MOVE_BEAT_TICKS;
       if (!unit.isPvE) {
         const owner = this.state.players.get(unit.ownerId);
         if (owner && owner.hasTech('speed')) speed *= 1.2;
       }
-      unit.t += speed;
-      if (unit.t < 1.0) return;
+      const slots = this.slotsOf(unit.roadId);
+      const step = 1 / slots;
+      // Faster units bank movement and step on more beats than slow ones
+      unit.moveAcc = Math.min(unit.moveAcc + speed, step * 2);
+      if (unit.moveAcc < step) continue;
 
-      const targetId = road.toId;
-      if (this.state.cities.has(targetId)) {
-        this.arriveAtCity(unit, targetId, toRemove);
-      } else if (this.state.lairs.has(targetId)) {
-        this.arriveAtLair(unit, targetId, toRemove);
-      } else {
-        const nextRoad = this.findNextRoad(unit, road, targetId);
-        if (nextRoad) {
-          unit.roadId = nextRoad.id;
-          unit.t = 0;
-          unit.originNodeId = targetId;
-          unit.roadsCrossed++;
+      const slot = Math.round(unit.t * slots);
+      if (slot + 1 >= slots) {
+        unit.moveAcc = 0;
+        const targetId = road.toId;
+        const fromKey = this.canonSlotKey(unit.roadId, slot);
+        if (this.state.cities.has(targetId)) {
+          this.arriveAtCity(unit, targetId, toRemove);
+        } else if (this.state.lairs.has(targetId)) {
+          this.arriveAtLair(unit, targetId, toRemove);
         } else {
-          toRemove.push(unit.id);
-          this.refundPop(unit.ownerId);
+          const nextRoad = this.findNextRoad(unit, road, targetId);
+          if (nextRoad) {
+            unit.roadId = nextRoad.id;
+            unit.t = 0;
+            unit.originNodeId = targetId;
+            unit.roadsCrossed++;
+            occ.set(this.canonSlotKey(nextRoad.id, 0), unit.id);
+          } else {
+            toRemove.push(unit.id);
+            this.refundPop(unit.ownerId);
+          }
         }
+        occ.delete(fromKey);
+        continue;
       }
-    });
+
+      const nextKey = this.canonSlotKey(unit.roadId, slot + 1);
+      if (occ.has(nextKey)) continue; // tile taken — wait (or fight, if it's an enemy)
+      unit.moveAcc -= step;
+      occ.delete(this.canonSlotKey(unit.roadId, slot));
+      unit.t = (slot + 1) / slots;
+      occ.set(nextKey, unit.id);
+    }
     toRemove.forEach(id => this.state.units.delete(id));
   }
 
@@ -604,12 +663,14 @@ export class GameRoom extends Room<GameState> {
     groups.forEach((units, key) => {
       if (units.length < 2) return;
       const atNode = key.startsWith('node:');
+      // Units on adjacent road tiles engage
+      const engageRange = atNode ? 0 : 1.2 / (this.pairSlots.get(key.slice(5)) || 12);
       for (let i = 0; i < units.length; i++) {
         for (let j = i + 1; j < units.length; j++) {
           const a = units[i], b = units[j];
           if (a.ownerId === b.ownerId) continue;
           if (dead.has(a.id) || dead.has(b.id)) continue;
-          if (!atNode && Math.abs(this.pairPos(a) - this.pairPos(b)) > ENGAGE_RANGE_T) continue;
+          if (!atNode && Math.abs(this.pairPos(a) - this.pairPos(b)) > engageRange) continue;
 
           // Engaged: both stop (unless parked at a node already)
           if (!a.atNodeId) a.status = 'fighting';

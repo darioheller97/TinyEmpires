@@ -91,18 +91,19 @@ export default class GameScene extends Phaser.Scene {
   }
 
   update(): void {
-    // Units step on a beat — snap quickly toward each new step with a hop
+    // Road units hop tile-to-tile on the beat; villagers stroll smoothly
     this.unitGfx.forEach(u => {
       const pos = u.container.getData('worldPos') as { x: number; y: number } | undefined;
       if (!pos) return;
+      const villager = u.container.getData('isVillager') === true;
       const dx = pos.x - u.container.x;
       const dy = pos.y - u.container.y;
       if (Math.abs(dx) > 0.8) u.sprite.setFlipX(dx < 0);
-      u.container.x += dx * 0.45;
-      u.container.y += dy * 0.45;
-      // Little hop while covering a step
+      const lerp = villager ? 0.25 : 0.45;
+      u.container.x += dx * lerp;
+      u.container.y += dy * lerp;
       const dist = Math.hypot(dx, dy);
-      u.sprite.y = dist > 2 ? -Math.min(6, dist * 0.2) : 0;
+      u.sprite.y = !villager && dist > 4 ? -Math.min(8, dist * 0.22) : 0;
       u.container.setDepth(DEPTH_ENTITY + u.container.y * 0.01);
     });
   }
@@ -543,6 +544,7 @@ export default class GameScene extends Phaser.Scene {
     container.add([sprite, hpBar]);
     container.setData('worldPos', pos);
     container.setData('ownerId', unit.ownerId);
+    container.setData('isVillager', unit.type === 'villager');
     container.setDepth(DEPTH_ENTITY + pos.y * 0.01);
     this.unitGfx.set(unit.id, { container, sprite, hpBar, sheet: skin.sheet, anim: animKey });
   }
