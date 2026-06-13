@@ -24,6 +24,11 @@ export class Player extends Schema {
   @type('number') populationUsed: number = 0;
   @type('number') populationCap: number = 10;
   @type('string') connectedCityId: string = '';
+  // Lobby state
+  @type('boolean') ready: boolean = false;
+  @type('number') colorIndex: number = -1; // -1 = unassigned; index into PLAYER_COLORS
+  @type('boolean') isHost: boolean = false;
+  @type('boolean') eliminated: boolean = false;
   lastEconomyTick: number = 0;
 
   // Tech flags (comma-separated string since Colyseus MapSchema is complex)

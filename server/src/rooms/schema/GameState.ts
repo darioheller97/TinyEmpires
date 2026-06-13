@@ -48,4 +48,18 @@ export class GameState extends Schema {
 
   @type('number')
   mapHeight: number = 1216;
+
+  // ── Lobby / match lifecycle ──
+  // 'lobby'   : players gathering, picking colours, readying up (no sim).
+  // 'active'  : match running (sim tick alive).
+  // 'finished': someone won; client shows the end screen.
+  @type('string') phase: string = 'lobby';
+  @type('string') matchCode: string = '';
+  @type('string') winnerId: string = '';
+
+  // Host-chosen match settings (applied at start_match).
+  @type('string') mapSize: string = 'medium';  // small | medium | large
+  @type('number') npcCount: number = 2;         // number of lairs (0 = pure PvP)
+  @type('number') npcAggro: number = 1;         // wave frequency / first-wave scaling
+  @type('number') npcPower: number = 1;         // enemy HP/damage multiplier
 }

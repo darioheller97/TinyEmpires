@@ -13,10 +13,17 @@ function check(name, cond, detail = '') {
 
 // Own room (create + joinById) so we never land in someone else's game
 const roomA = await new Client(url).create('game_room', { name: 'Attacker', mapSeed: SEED });
-await sleep(800);
+await sleep(600);
 const roomB = await new Client(url).joinById(roomA.roomId, { name: 'Defender' });
-await sleep(800);
+await sleep(600);
 const state = roomA.state;
+// Lobby handshake: B readies, host A starts the match.
+check('starts in lobby', state.phase === 'lobby', `phase=${state.phase}`);
+roomB.send('set_ready', { ready: true });
+await sleep(400);
+roomA.send('start_match', {});
+await sleep(900);
+check('match active', state.phase === 'active', `phase=${state.phase}`);
 const meA = state.players.get(roomA.sessionId);
 const meB = roomB.state.players.get(roomB.sessionId);
 check('two players, two cities', meA.connectedCityId !== meB.connectedCityId,

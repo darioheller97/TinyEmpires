@@ -113,7 +113,10 @@ export default class GameScene extends Phaser.Scene {
     this.selectionRing = this.add.graphics().setDepth(40);
     this.routeArrowGfx = this.add.graphics().setDepth(30);
     this.setupCameraControls();
-    this.connectToServer();
+    // The connection is owned by React (menu/lobby established it); the scene
+    // only mounts once a match is active, and receives the room via registry.
+    this.client = (this.registry.get('gameClient') as GameClient) ?? null;
+    if (this.client) this.client.onStateChange(state => this.syncState(state));
     // Cosmetic combat tick: archers (capital, towers, field units) loose arrows
     // at nearby enemies. Purely visual — the server owns the actual damage.
     this.time.addEvent({ delay: 700, loop: true, callback: () => this.tickArcherFx() });
@@ -1183,16 +1186,6 @@ export default class GameScene extends Phaser.Scene {
   getClient(): GameClient | null { return this.client; }
 
   // ── Network ───────────────────────────────────────────────
-  private async connectToServer(): Promise<void> {
-    this.client = new GameClient();
-    try {
-      await this.client.connect();
-      this.client.onStateChange(state => this.syncState(state));
-    } catch (e) {
-      console.warn('Could not connect to server', e);
-    }
-  }
-
   private syncState(state: any): void {
     if (state.players) {
       state.players.forEach((p: any, id: string) => this.playerColors.set(id, p.colorHex));

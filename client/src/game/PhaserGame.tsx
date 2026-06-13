@@ -1,8 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 import GameScene, { SelectionInfo, MinimapData } from './GameScene';
+import { GameClient } from '../network/GameClient';
 
 interface Props {
+  client: GameClient;
   onResourceUpdate: (resources: { wood: number; food: number; gold: number; popUsed: number; popCap: number }) => void;
   onMapBounds: (bounds: { width: number; height: number }) => void;
   onSelectionChange: (selection: SelectionInfo) => void;
@@ -12,7 +14,7 @@ interface Props {
   onSceneReady?: (scene: GameScene) => void;
 }
 
-export default function PhaserGame({ onResourceUpdate, onMapBounds, onSelectionChange, onBuildingsUpdate, onTechsUpdate, onMinimapData, onSceneReady }: Props) {
+export default function PhaserGame({ client, onResourceUpdate, onMapBounds, onSelectionChange, onBuildingsUpdate, onTechsUpdate, onMinimapData, onSceneReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
 
@@ -36,6 +38,7 @@ export default function PhaserGame({ onResourceUpdate, onMapBounds, onSelectionC
       const game = new Phaser.Game(config);
       gameRef.current = game;
 
+      game.registry.set('gameClient', client);
       game.registry.set('onResourceUpdate', onResourceUpdate);
       game.registry.set('onMapBounds', onMapBounds);
       game.registry.set('onSelectionChange', onSelectionChange);

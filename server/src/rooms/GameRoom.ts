@@ -91,12 +91,58 @@ export class GameRoom extends Room<GameState> {
   private spreadCursor = new Map<string, number>();
   // Plateau discs that block building placement and villager movement
   private elevations: { x: number; y: number; r: number }[] = [];
+  // Seed chosen by the host, applied when the match actually starts.
+  private pendingSeed: number | undefined = undefined;
+  private started = false;
 
   onCreate(options: any): void {
-    console.log('GameRoom created!');
+    console.log('GameRoom created!', options?.code ?? '(no code)');
     this.setState(new GameState());
-    this.initMap(typeof options?.mapSeed === 'number' ? options.mapSeed >>> 0 : undefined);
+    this.state.phase = 'lobby';
+    this.state.matchCode = String(options?.code || this.genCode()).toUpperCase();
+    this.applySettings(options);
+    this.pendingSeed = typeof options?.mapSeed === 'number' ? options.mapSeed >>> 0 : undefined;
     this.setMessageHandlers();
+    // Map generation + sim tick are deferred to startMatch() (the host presses
+    // Start once everyone is ready; solo games auto-start in onJoin).
+  }
+
+  private genCode(): string {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous 0/O/1/I
+    let s = '';
+    for (let i = 0; i < 5; i++) s += chars[Math.floor(Math.random() * chars.length)];
+    return s;
+  }
+
+  private applySettings(opts: any): void {
+    if (!opts) return;
+    if (typeof opts.mapSize === 'string') this.state.mapSize = opts.mapSize;
+    if (typeof opts.npcCount === 'number') this.state.npcCount = Math.max(0, Math.min(6, opts.npcCount | 0));
+    if (typeof opts.npcAggro === 'number') this.state.npcAggro = Math.max(0.25, Math.min(3, opts.npcAggro));
+    if (typeof opts.npcPower === 'number') this.state.npcPower = Math.max(0.25, Math.min(3, opts.npcPower));
+  }
+
+  private firstFreeColorIndex(): number {
+    const used = new Set<number>();
+    this.state.players.forEach(p => { if (p.colorIndex >= 0) used.add(p.colorIndex); });
+    for (let i = 0; i < PLAYER_COLORS.length; i++) if (!used.has(i)) return i;
+    return 0;
+  }
+
+  // Build the map, claim a capital for each player, and start the sim.
+  private startMatch(): void {
+    if (this.started || this.state.phase !== 'lobby') return;
+    this.started = true;
+    this.initMap(this.pendingSeed);
+    const cities = [...this.state.cities.values()];
+    this.state.players.forEach(p => {
+      if (p.colorIndex < 0) p.colorIndex = this.firstFreeColorIndex();
+      p.colorHex = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
+      const city = cities.find(c => !c.ownerId);
+      if (city) { city.ownerId = p.id; city.health = city.maxHealth; p.connectedCityId = city.id; }
+    });
+    this.state.phase = 'active';
+    this.lock(); // no late joins once the match is running
     this.tickInterval = setInterval(() => this.gameTick(), 100);
   }
 
@@ -344,6 +390,44 @@ export class GameRoom extends Room<GameState> {
       player.gold -= tech.cost;
       player.addTech(tech.id);
     });
+
+    // ── Lobby handlers (only meaningful while phase === 'lobby') ──
+    this.onMessage('select_color', (client, msg: { index: number }) => {
+      if (this.state.phase !== 'lobby') return;
+      const p = this.state.players.get(client.sessionId);
+      if (!p) return;
+      const idx = (msg?.index ?? -1) | 0;
+      if (idx < 0 || idx >= PLAYER_COLORS.length) return;
+      let taken = false;
+      this.state.players.forEach(o => { if (o.id !== p.id && o.colorIndex === idx) taken = true; });
+      if (taken) return;
+      p.colorIndex = idx;
+      p.colorHex = PLAYER_COLORS[idx];
+    });
+
+    this.onMessage('set_ready', (client, msg: { ready: boolean }) => {
+      if (this.state.phase !== 'lobby') return;
+      const p = this.state.players.get(client.sessionId);
+      if (p) p.ready = !!msg?.ready;
+    });
+
+    this.onMessage('set_settings', (client, msg: any) => {
+      if (this.state.phase !== 'lobby') return;
+      const p = this.state.players.get(client.sessionId);
+      if (!p || !p.isHost) return;
+      this.applySettings(msg);
+    });
+
+    this.onMessage('start_match', (client) => {
+      if (this.state.phase !== 'lobby') return;
+      const p = this.state.players.get(client.sessionId);
+      if (!p || !p.isHost) return;
+      // Every non-host player must be ready (host readies by pressing Start).
+      let allReady = true;
+      this.state.players.forEach(o => { if (o.id !== p.id && !o.ready) allReady = false; });
+      if (!allReady) return;
+      this.startMatch();
+    });
   }
 
   private trySpawnTroop(player: Player, cityId: string, type: string): boolean {
@@ -372,18 +456,20 @@ export class GameRoom extends Room<GameState> {
   }
 
   onJoin(client: Client, options: any): void {
-    const ci = this.state.players.size % PLAYER_COLORS.length;
-    const p = new Player(client.sessionId, options?.name || `Player ${this.state.players.size + 1}`, PLAYER_COLORS[ci]);
-    const uc = [...this.state.cities.values()].find(c => !c.ownerId);
-    if (uc) {
-      uc.ownerId = client.sessionId;
-      uc.health = uc.maxHealth;
-      p.connectedCityId = uc.id;
-    }
+    // Once a match is running the room is locked, but guard anyway.
+    if (this.state.phase !== 'lobby') throw new Error('Match already in progress');
+    const isFirst = this.state.players.size === 0;
+    const p = new Player(client.sessionId, options?.name || `Player ${this.state.players.size + 1}`, PLAYER_COLORS[0]);
+    p.isHost = isFirst;
+    p.colorIndex = this.firstFreeColorIndex();
+    p.colorHex = PLAYER_COLORS[p.colorIndex % PLAYER_COLORS.length];
     this.state.players.set(client.sessionId, p);
+    // Solo games skip the lobby entirely: ready + start immediately.
+    if (options?.solo) { p.ready = true; this.startMatch(); }
   }
 
   onLeave(client: Client, consented: boolean): void {
+    const leaving = this.state.players.get(client.sessionId);
     this.state.cities.forEach(c => { if (c.ownerId === client.sessionId) c.ownerId = ''; });
     const toRemove: string[] = [];
     this.state.units.forEach(u => { if (u.ownerId === client.sessionId) toRemove.push(u.id); });
@@ -393,6 +479,11 @@ export class GameRoom extends Room<GameState> {
       if (idx >= 0) is.waypoints.splice(idx, 1);
     });
     this.state.players.delete(client.sessionId);
+    // Hand the host crown to whoever remains, so the lobby can still start.
+    if (leaving?.isHost) {
+      const next = this.state.players.values().next().value as Player | undefined;
+      if (next) next.isHost = true;
+    }
   }
 
   onDispose(): void { clearInterval(this.tickInterval); }

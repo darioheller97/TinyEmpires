@@ -15,10 +15,26 @@ export function resolveWsUrl(): string {
   return `${proto}://${window.location.host}`;
 }
 
+export interface MatchSettings {
+  mapSize?: string;   // small | medium | large
+  npcCount?: number;
+  npcAggro?: number;
+  npcPower?: number;
+}
+
+// Friendly room code: no ambiguous 0/O/1/I. Must match the server charset.
+function genCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 5; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+
 export class GameClient {
   private client: Colyseus.Client;
   private room: Colyseus.Room | null = null;
-  private onStateChangeCb: ((state: any) => void) | null = null;
+  private stateListeners: ((state: any) => void)[] = [];
+  private onLeaveCb: (() => void) | null = null;
 
   constructor(wsUrl: string = resolveWsUrl()) {
     this.client = new Colyseus.Client(wsUrl);
@@ -28,23 +44,52 @@ export class GameClient {
     return this.room?.sessionId ?? null;
   }
 
-  async connect(): Promise<void> {
-    this.room = await this.client.joinOrCreate('game_room', {});
-
-    this.room.onStateChange((state) => {
-      if (this.onStateChangeCb) {
-        this.onStateChangeCb(state);
-      }
-    });
-
-    this.room.onError((err) => {
-      console.error('Room error:', err);
-    });
+  get state(): any {
+    return this.room?.state ?? null;
   }
 
+  /** Host a new private lobby; returns the room code others type to join. */
+  async createRoom(settings: MatchSettings = {}, name?: string): Promise<string> {
+    const code = genCode();
+    this.room = await this.client.joinOrCreate('game_room', { code, name, ...settings });
+    this.attach();
+    return code;
+  }
+
+  /** Join an existing lobby by its code. Throws if the code is invalid/full. */
+  async joinByCode(code: string, name?: string): Promise<void> {
+    this.room = await this.client.joinOrCreate('game_room', { code: code.toUpperCase(), name });
+    this.attach();
+  }
+
+  /** Solo vs NPC: skips the lobby (server auto-readies + starts). */
+  async createSolo(settings: MatchSettings = {}, name?: string): Promise<void> {
+    const code = genCode();
+    this.room = await this.client.joinOrCreate('game_room', { code, name, solo: true, ...settings });
+    this.attach();
+  }
+
+  private attach(): void {
+    if (!this.room) return;
+    this.room.onStateChange((state) => { this.stateListeners.forEach(l => l(state)); });
+    this.room.onError((code, message) => console.error('Room error:', code, message));
+    this.room.onLeave(() => this.onLeaveCb?.());
+  }
+
+  // Multiple subscribers (React lobby + the Phaser scene) both listen.
   onStateChange(cb: (state: any) => void): void {
-    this.onStateChangeCb = cb;
+    this.stateListeners.push(cb);
+    // Fire once immediately if state already exists (e.g. scene attaches late).
+    if (this.room?.state) cb(this.room.state);
   }
+
+  onLeave(cb: () => void): void { this.onLeaveCb = cb; }
+
+  // ── Lobby messages ──
+  selectColor(index: number): void { this.room?.send('select_color', { index }); }
+  setReady(ready: boolean): void { this.room?.send('set_ready', { ready }); }
+  setSettings(settings: MatchSettings): void { this.room?.send('set_settings', settings); }
+  startMatch(): void { this.room?.send('start_match', {}); }
 
   setRoute(intersectionId: string, targetRoadId: string): void {
     this.room?.send('set_route', { intersectionId, targetRoadId });

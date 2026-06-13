@@ -34,7 +34,9 @@ const gameServer = new Server({
   }),
 });
 
-gameServer.define('game_room', GameRoom);
+// filterBy(['code']) makes joinOrCreate match an existing room by its `code`
+// option — that's how private code lobbies work (random codes, never listed).
+gameServer.define('game_room', GameRoom).filterBy(['code']);
 
 httpServer.listen(PORT, () => {
   console.log(`Tiny Empires server listening on ws://localhost:${PORT}`);
