@@ -81,6 +81,7 @@ export default class GameScene extends Phaser.Scene {
   private cityBuildingCounts: Map<string, number> = new Map();
   private prevUnitHealth: Map<string, number> = new Map();
   private playerColors: Map<string, string> = new Map();
+  private beatClock = 0; // running 75 BPM metronome phase (ms), re-anchored to unit hops
 
   private radialMenu: Phaser.GameObjects.Container | null = null;
   private myRoutes: Map<string, string> = new Map();
@@ -118,6 +119,16 @@ export default class GameScene extends Phaser.Scene {
   }
 
   update(time: number): void {
+    // A steady 75 BPM pulse under the music so the track always has a beat.
+    // It free-runs at the unit-step interval and gets re-anchored to the real
+    // hop below, so when troops march the beat stays the one they move to.
+    const BEAT_MS = 800;
+    if (this.beatClock === 0) this.beatClock = time;
+    while (time - this.beatClock >= BEAT_MS) {
+      this.beatClock += BEAT_MS;
+      playSfx('beat_drum', { volume: 0.3, throttleMs: 400, throttleKey: 'beat' });
+    }
+
     this.unitGfx.forEach(u => {
       const pos = u.container.getData('worldPos') as { x: number; y: number } | undefined;
       if (!pos) return;
@@ -148,12 +159,10 @@ export default class GameScene extends Phaser.Scene {
         c.setData('beatAt', time);
         const ddx = pos.x - c.x;
         if (Math.abs(ddx) > 0.8) u.sprite.setFlipX(ddx < 0);
-        // The drum pulse is driven by the actual unit hop, not a free-running
-        // clock, so it's always exactly on the beat the troops move to. The
-        // shared throttle collapses the whole marching column into one hit.
-        if (Math.hypot(pos.x - (c.getData('hopFrom') as { x: number }).x, pos.y - (c.getData('hopFrom') as { y: number }).y) > 4) {
-          playSfx('beat_drum', { volume: 0.3, throttleMs: 600, throttleKey: 'beat' });
-        }
+        // Re-anchor the metronome to this real step so the pulse lands exactly
+        // on the beat the troops move to (the constant clock above keeps it
+        // going when nothing is marching). Phase-only — the play is up there.
+        if (Math.hypot(ddx, pos.y - c.y) > 4) this.beatClock = time;
       }
       const from = c.getData('hopFrom') as { x: number; y: number };
       const to = c.getData('hopTo') as { x: number; y: number };
