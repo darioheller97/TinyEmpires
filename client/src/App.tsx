@@ -8,6 +8,7 @@ import InfoPanel from './ui/InfoPanel';
 import SpawnPanel from './ui/SpawnPanel';
 import TechTreeModal, { TechOption } from './ui/TechTreeModal';
 import { BUTTON as SKIN_BUTTON } from './ui/skin';
+import { playSfx, toggleMute, isAudioMuted } from './game/audio';
 
 // Styles
 const HUD_WRAPPER: React.CSSProperties = {
@@ -59,9 +60,16 @@ export default function App() {
   const [techTreeVisible, setTechTreeVisible] = useState(false);
   const [researchedTechs, setResearchedTechs] = useState<string[]>([]);
   const [minimapData, setMinimapData] = useState<MinimapData | null>(null);
+  const [muted, setMuted] = useState(false);
   const sceneRef = useRef<GameScene | null>(null);
+  const prevGold = useRef(20);
 
-  const handleResourceUpdate = useCallback((r: typeof resources) => setResources(r), []);
+  const handleResourceUpdate = useCallback((r: typeof resources) => {
+    // Chime when gold arrives in a chunk (a villager deposit), not the mining trickle.
+    if (r.gold > prevGold.current + 4) playSfx('coins_gold', { volume: 0.4, throttleMs: 1000 });
+    prevGold.current = r.gold;
+    setResources(r);
+  }, []);
   const handleSelectionChange = useCallback((s: SelectionInfo) => setSelection(s), []);
   const handleBuildingsUpdate = useCallback((counts: Map<string, number>) => setBuildingCounts(counts), []);
   const handleTechsUpdate = useCallback((techs: string[]) => setResearchedTechs(techs), []);
@@ -72,25 +80,27 @@ export default function App() {
   const client = () => sceneRef.current?.getClient() ?? null;
 
   const handleBuild = useCallback((type: string) => {
-    if (selection.type === 'city') client()?.buildStructure(selection.id, type);
+    if (selection.type === 'city') { client()?.buildStructure(selection.id, type); playSfx('build_place', { volume: 0.55 }); }
   }, [selection]);
   const handleUpgradeTownHall = useCallback(() => {
-    if (selection.type === 'city') client()?.upgradeTownHall(selection.id);
+    if (selection.type === 'city') { client()?.upgradeTownHall(selection.id); playSfx('build_place', { volume: 0.55 }); }
   }, [selection]);
   const handleSpawn = useCallback((type: string) => {
     if (selection.type === 'building' && selection.data?.cityId) {
       client()?.spawnTroops(selection.data.cityId, type);
+      playSfx('unit_recruit', { volume: 0.5 });
     }
   }, [selection]);
   const handleSetAutoProduce = useCallback((troopType: string) => {
-    if (selection.type === 'building') client()?.setAutoProduce(selection.id, troopType);
+    if (selection.type === 'building') { client()?.setAutoProduce(selection.id, troopType); playSfx('ui_click', { volume: 0.4 }); }
   }, [selection]);
   const handleHireVillager = useCallback((resourceType: string) => {
-    if (selection.type === 'city') client()?.spawnVillager(selection.id, resourceType);
+    if (selection.type === 'city') { client()?.spawnVillager(selection.id, resourceType); playSfx('unit_recruit', { volume: 0.5 }); }
   }, [selection]);
   const handleResearch = useCallback((techId: string) => {
-    client()?.researchTech(techId);
+    client()?.researchTech(techId); playSfx('build_place', { volume: 0.5 });
   }, []);
+  const handleToggleMute = useCallback(() => setMuted(toggleMute()), []);
   const handleNavigate = useCallback((x: number, y: number) => {
     sceneRef.current?.centerCamera(x, y);
   }, []);
@@ -118,9 +128,12 @@ export default function App() {
         <div style={TOP_MIDDLE}>
           <ResourceBar resources={resources} />
         </div>
-        <div style={TOP_LEFT}>
-          <button style={TECH_BTN} onClick={() => setTechTreeVisible(true)}>
+        <div style={{ ...TOP_LEFT, display: 'flex', gap: '8px' }}>
+          <button style={TECH_BTN} onClick={() => { playSfx('ui_click', { volume: 0.4 }); setTechTreeVisible(true); }}>
             📜 Tech Tree
+          </button>
+          <button style={TECH_BTN} onClick={handleToggleMute} title={muted ? 'Unmute' : 'Mute'}>
+            {muted ? '🔇' : '🔊'}
           </button>
         </div>
         <div style={TOP_RIGHT}>

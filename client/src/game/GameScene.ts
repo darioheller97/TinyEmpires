@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { GameClient } from '../network/GameClient';
 import { preloadAssets, createAnims, unitSkin, factionOf } from './assets';
 import { buildTerrain, TerrainInfo, TILE, WATER } from './terrain';
+import { initAudio, startAmbient, playSfx } from './audio';
 
 interface NodeInfo { id: string; x: number; y: number; name: string; kind: 'city' | 'intersection' | 'lair'; }
 interface RoadData { id: string; fromId: string; toId: string; splinePoints: { x: number; y: number }[]; tilePath: { c: number; r: number }[]; }
@@ -103,6 +104,8 @@ export default class GameScene extends Phaser.Scene {
   create(): void {
     if (import.meta.env.DEV) (window as any).__scene = this;
     createAnims(this);
+    initAudio(this);
+    this.input.once('pointerdown', () => startAmbient()); // browsers gate audio behind a gesture
     this.selectionRing = this.add.graphics().setDepth(40);
     this.routeArrowGfx = this.add.graphics().setDepth(30);
     this.setupCameraControls();
@@ -591,6 +594,10 @@ export default class GameScene extends Phaser.Scene {
         existing.anim = animKey;
       }
       const ratio = unit.health / (unit.maxHealth || 100);
+      const prevRatio = existing.container.getData('hpRatio') as number | undefined;
+      if (prevRatio !== undefined && ratio < prevRatio - 0.001) {
+        playSfx('sword_clash', { volume: 0.35, throttleMs: 160 }); // a hit landed somewhere
+      }
       existing.container.setData('hpRatio', ratio);
       this.setBarRatio(existing.hpBar, ratio);
       existing.hpBar.setVisible(unit.health < unit.maxHealth);
@@ -681,6 +688,7 @@ export default class GameScene extends Phaser.Scene {
   // ── Selection ──────────────────────────────────────────────
   private selectEntity(type: SelectionType, id: string, name: string, data?: any): void {
     if (type !== 'intersection') this.hideRadialMenu();
+    playSfx('ui_click', { volume: 0.4, throttleMs: 60 });
     this.selection = { type, id, name, data };
     this.redrawSelectionRing();
     const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void);
@@ -859,6 +867,7 @@ export default class GameScene extends Phaser.Scene {
       if (!liveBuildings.has(id)) {
         entry.gfx.destroy();
         this.buildingGfx.delete(id);
+        playSfx('building_destroyed', { volume: 0.5, throttleMs: 300 });
         if (this.selection.type === 'building' && this.selection.id === id) this.clearSelection();
       }
     });

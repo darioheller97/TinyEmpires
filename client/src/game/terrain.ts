@@ -149,6 +149,21 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
       }
     }
   });
+  // Drop lone/skinny plateau cells (fewer than 2 orthogonal ELEV neighbours):
+  // a 1-tile plateau renders as a rocky stump that reads as detached from the
+  // land. Two passes peels off single-tile spurs so plateaus stay chunky.
+  const elevAt = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] === ELEV;
+  for (let pass = 0; pass < 2; pass++) {
+    const demote: [number, number][] = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (grid[r][c] !== ELEV) continue;
+        const n = (elevAt(r - 1, c) ? 1 : 0) + (elevAt(r + 1, c) ? 1 : 0) + (elevAt(r, c - 1) ? 1 : 0) + (elevAt(r, c + 1) ? 1 : 0);
+        if (n < 2) demote.push([r, c]);
+      }
+    }
+    demote.forEach(([r, c]) => { grid[r][c] = GRASS; });
+  }
 
   // ── Region labels: each landmass + each plateau gets its own grass ──
   const island: number[][] = Array.from({ length: rows }, () => Array(cols).fill(-1));
@@ -239,8 +254,9 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
       scene.add.image(x + TILE / 2, (r + 2) * TILE, 'shadow').setOrigin(0.5, 0.4)
         .setScale(0.5, 0.34).setAlpha(0.4).setDepth(5);
       if (southCoast(r, c)) {
-        // water ripple breaking against the foot of the cliff
-        scene.add.sprite(x + TILE / 2, (r + 2) * TILE, 'foam2').setDepth(1)
+        // a single small ripple lapping right at the foot of the cliff
+        scene.add.sprite(x + TILE / 2, (r + 1) * TILE + TILE * 0.78, 'foam2').setOrigin(0.5)
+          .setScale(0.5).setAlpha(0.85).setDepth(1)
           .play({ key: 'foam2_anim', startFrame: Math.floor(rng() * 16) });
       }
       cliffTop.add(r * cols + c);
@@ -271,7 +287,8 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
       const coastal = !isLand(r - 1, c) || !isLand(r + 1, c) || !isLand(r, c - 1) || !isLand(r, c + 1);
       if (!coastal) continue;
       const p = cellCenter(c, r);
-      scene.add.sprite(p.x, p.y, 'foam2').setDepth(1).play({ key: 'foam2_anim', startFrame: Math.floor(rng() * 16) });
+      scene.add.sprite(p.x, p.y, 'foam2').setScale(0.72).setAlpha(0.9).setDepth(1)
+        .play({ key: 'foam2_anim', startFrame: Math.floor(rng() * 16) });
     }
   }
 

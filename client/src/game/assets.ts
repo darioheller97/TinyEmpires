@@ -131,9 +131,14 @@ for (let i = 1; i <= 8; i++) {
   IMAGES.push({ key: `cloud${i}`, url: `${A2}/Clouds/Clouds_0${i}.png` });
 }
 
+// Sound effects (ElevenLabs-generated, Tiny Swords pixel style). Loaded as
+// `sfx_<name>`; played through game/audio.ts.
+export const SFX = ['ui_click', 'build_place', 'unit_recruit', 'coins_gold', 'sword_clash', 'building_destroyed', 'victory', 'ambient_loop'] as const;
+
 export function preloadAssets(scene: Phaser.Scene): void {
   SHEETS.forEach(s => scene.load.spritesheet(s.key, s.url, { frameWidth: s.frameWidth, frameHeight: s.frameHeight }));
   IMAGES.forEach(i => scene.load.image(i.key, i.url));
+  SFX.forEach(name => scene.load.audio(`sfx_${name}`, `${A2}/sfx/${name}.mp3`));
 }
 
 function rowAnim(scene: Phaser.Scene, key: string, sheet: string, row: number, cols: number, count: number, frameRate: number, repeat = -1): void {
