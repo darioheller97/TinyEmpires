@@ -12,7 +12,8 @@ function check(name, cond, detail = '') {
 }
 
 const client = new Client(url);
-const room = await client.joinOrCreate('game_room', { name: 'SmokeTester', mapSeed: SEED });
+// create() (not joinOrCreate) so we never land in someone else's room
+const room = await client.create('game_room', { name: 'SmokeTester', mapSeed: SEED });
 let state = null;
 room.onStateChange(s => { state = s; });
 await sleep(1500);

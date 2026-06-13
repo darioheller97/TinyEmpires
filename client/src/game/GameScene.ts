@@ -394,6 +394,8 @@ export default class GameScene extends Phaser.Scene {
     if (r.type === 'tree') {
       const t = this.add.sprite(0, 0, 'tree').setOrigin(0.5, 0.75);
       t.play({ key: 'tree_anim', startFrame: (r.x + r.y) % 4 });
+      if ((r.x * 7 + r.y * 13) % 10 < 3) t.setTint(0xf3cd7e); // golden variety
+      else if ((r.x * 7 + r.y * 13) % 10 < 5) t.setTint(0xcfe8a0); // pale green
       container.add(t);
     } else if (r.type === 'sheep') {
       const s = this.add.sprite(0, 0, 'sheep').setScale(0.7);
@@ -446,7 +448,8 @@ export default class GameScene extends Phaser.Scene {
       for (let c = 0; c < cols; c++) {
         const s = fog[r * cols + c];
         if (s === 2) continue;
-        this.fogGfx.fillStyle(0x06101c, s === 0 ? 0.88 : 0.4);
+        // Unexplored is fully opaque — you don't know what's out there
+        this.fogGfx.fillStyle(s === 0 ? 0x0d1b2a : 0x06101c, s === 0 ? 1 : 0.4);
         this.fogGfx.fillRect(c * TILE, r * TILE, TILE, TILE);
       }
     }

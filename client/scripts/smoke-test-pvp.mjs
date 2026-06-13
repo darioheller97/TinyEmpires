@@ -11,15 +11,11 @@ function check(name, cond, detail = '') {
   if (!cond) failures++;
 }
 
-async function join(name) {
-  const c = new Client(url);
-  const room = await c.joinOrCreate('game_room', { name, mapSeed: SEED });
-  await sleep(800);
-  return room;
-}
-
-const roomA = await join('Attacker');
-const roomB = await join('Defender');
+// Own room (create + joinById) so we never land in someone else's game
+const roomA = await new Client(url).create('game_room', { name: 'Attacker', mapSeed: SEED });
+await sleep(800);
+const roomB = await new Client(url).joinById(roomA.roomId, { name: 'Defender' });
+await sleep(800);
 const state = roomA.state;
 const meA = state.players.get(roomA.sessionId);
 const meB = roomB.state.players.get(roomB.sessionId);

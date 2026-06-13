@@ -54,6 +54,21 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
       if (nearCity || nearLair || nearRes || nearRoad) grid[r][c] = GRASS;
     }
   }
+  // Extra landmass blobs make the island shape less corridor-like
+  const landCells: [number, number][] = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (grid[r][c] === GRASS) landCells.push([r, c]);
+  for (let k = 0; k < 40 && landCells.length > 0; k++) {
+    const [br, bc] = landCells[Math.floor(rng() * landCells.length)];
+    const cr = br + Math.floor((rng() - 0.5) * 8);
+    const cc = bc + Math.floor((rng() - 0.5) * 8);
+    const rad = 1 + Math.floor(rng() * 3);
+    for (let r = Math.max(1, cr - rad); r <= Math.min(rows - 2, cr + rad); r++) {
+      for (let c = Math.max(1, cc - rad); c <= Math.min(cols - 2, cc + rad); c++) {
+        if ((r - cr) ** 2 + (c - cc) ** 2 <= rad * rad && grid[r][c] === WATER) grid[r][c] = GRASS;
+      }
+    }
+  }
+
   // Organic coastline: one randomized dilation pass
   const grown: [number, number][] = [];
   for (let r = 1; r < rows - 1; r++) {
@@ -65,11 +80,19 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
   }
   grown.forEach(([r, c]) => { grid[r][c] = GRASS; });
 
-  // ── Sand roads along splines ──
+  // ── Sand roads along splines (kept 4-connected so tiles join up) ──
+  const markSand = (r: number, c: number) => {
+    if (r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] !== WATER) grid[r][c] = SAND;
+  };
   input.roadSplines.forEach(spline => {
+    let prev: { r: number; c: number } | null = null;
     spline.forEach(sp => {
       const c = Math.floor(sp.x / TILE), r = Math.floor(sp.y / TILE);
-      if (r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c] !== WATER) grid[r][c] = SAND;
+      markSand(r, c);
+      // Diagonal step ⇒ bridge with an orthogonal neighbor, otherwise the
+      // autotiler draws two disconnected path stubs
+      if (prev && prev.r !== r && prev.c !== c) markSand(prev.r, c);
+      prev = { r, c };
     });
   });
   // City plazas
@@ -121,14 +144,47 @@ export function buildTerrain(scene: Phaser.Scene, input: TerrainInput): TerrainI
       .setDepth(1).play({ key: rng() < 0.5 ? 'rocks1_anim' : 'rocks2_anim', startFrame: Math.floor(rng() * 8) });
   }
 
+  // ── Mountains / plateaus (complete stamps from the elevation sheet) ──
+  const stamps = [
+    { x: 0, y: 0, w: 192, h: 192 },    // big plateau
+    { x: 0, y: 256, w: 192, h: 128 },  // low plateau
+    { x: 192, y: 0, w: 64, h: 192 },   // rock pillar
+  ];
+  const placed: { x: number; y: number }[] = [];
+  const areaIsGrass = (px: number, py: number, w: number, h: number): boolean => {
+    for (let y = py; y < py + h; y += TILE) {
+      for (let x = px; x < px + w; x += TILE) {
+        const c = Math.floor(x / TILE), r = Math.floor(y / TILE);
+        if (r < 0 || r >= rows || c < 0 || c >= cols || grid[r][c] !== GRASS) return false;
+      }
+    }
+    return true;
+  };
+  for (let i = 0; i < 60 && placed.length < 9; i++) {
+    const stamp = stamps[Math.floor(rng() * stamps.length)];
+    const px = Math.floor(rng() * (cols - 4)) * TILE;
+    const py = Math.floor(rng() * (rows - 4)) * TILE;
+    const center = { x: px + stamp.w / 2, y: py + stamp.h / 2 };
+    if (!areaIsGrass(px, py, stamp.w, stamp.h)) continue;
+    if (input.cities.some(n => Math.hypot(n.x - center.x, n.y - center.y) < 320)) continue;
+    if (input.lairs.some(n => Math.hypot(n.x - center.x, n.y - center.y) < 220)) continue;
+    if (input.resources.some(n => Math.hypot(n.x - center.x, n.y - center.y) < 130)) continue;
+    if (placed.some(p => Math.hypot(p.x - center.x, p.y - center.y) < 320)) continue;
+    placed.push(center);
+    const img = scene.add.image(px - stamp.x, py - stamp.y, 'elevation').setOrigin(0);
+    img.setCrop(stamp.x, stamp.y, stamp.w, stamp.h);
+    img.setDepth(10 + (py + stamp.h) * 0.01);
+  }
+
   // ── Scattered decorations (mushrooms, bushes, stones…) ──
   // Trees/sheep/gold come from server resource nodes, drawn by the scene.
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    if (grid[r][c] !== GRASS || rng() > 0.04) continue;
+    if (grid[r][c] !== GRASS || rng() > 0.05) continue;
     const p = cellCenter(c, r);
     if (input.cities.some(n => Math.hypot(n.x - p.x, n.y - p.y) < 180)) continue;
     const idx = 1 + Math.floor(rng() * 18);
-    scene.add.image(p.x + (rng() - 0.5) * 30, p.y + (rng() - 0.5) * 30, `deco_${idx}`).setDepth(4);
+    const d = scene.add.image(p.x + (rng() - 0.5) * 30, p.y + (rng() - 0.5) * 30, `deco_${idx}`).setDepth(4);
+    if (rng() < 0.25) d.setTint(0xf3cd7e); // autumn-tinted variety
   }
 
   return { grid, cols, rows, tile: TILE };

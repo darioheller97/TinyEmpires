@@ -49,6 +49,8 @@ export const SHEETS: SheetDef[] = [
 
 export const IMAGES: { key: string; url: string }[] = [
   { key: 'water', url: `${A}/Terrain/Water/Water.png` },
+  { key: 'elevation', url: `${A}/Terrain/Ground/Tilemap_Elevation.png` },
+  { key: 'icon_close', url: `${A}/UI/Icons/Regular_01.png` },
   { key: 'goldmine', url: `${A}/Resources/Gold Mine/GoldMine_Active.png` },
   { key: 'goldmine_destroyed', url: `${A}/Resources/Gold Mine/GoldMine_Destroyed.png` },
   { key: 'goblin_house', url: `${A}/Factions/Goblins/Buildings/Wood_House/Goblin_House.png` },

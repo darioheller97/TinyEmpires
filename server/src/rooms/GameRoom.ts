@@ -17,7 +17,9 @@ const ECONOMY_INTERVAL_TICKS = 10;   // 1s at 10Hz
 const COMBAT_COOLDOWN_TICKS = 3;     // attack every 0.3s while engaged
 const RETALIATE_INTERVAL_TICKS = 5;  // towers/town hall strike besiegers
 const AUTO_PRODUCE_INTERVAL_TICKS = 60;
-const PVE_SPAWN_INTERVAL = 300;      // 30s between lair waves
+const PVE_SPAWN_INTERVAL = 450;      // 45s between lair waves
+const PVE_FIRST_WAVE_TICK = 1800;    // 3 min of peace before monsters stir
+const PVE_MAX_ALIVE_PER_LAIR = 5;
 const LAIR_RESPAWN_TICKS = 1800;     // destroyed lairs regrow after 3 min
 const ENGAGE_RANGE_T = 0.04;         // engagement distance along a road
 const HEAL_INTERVAL_TICKS = 5;
@@ -78,6 +80,7 @@ export class GameRoom extends Room<GameState> {
     map.lairs.forEach(l => {
       const lair = new LairNode(l.id, l.x, l.y, l.type);
       lair.spawnIntervalTicks = PVE_SPAWN_INTERVAL;
+      lair.lastSpawnTick = PVE_FIRST_WAVE_TICK - PVE_SPAWN_INTERVAL;
       this.state.lairs.set(l.id, lair);
     });
     const allNodes = [...map.cities, ...map.intersections, ...map.lairs];
@@ -333,6 +336,11 @@ export class GameRoom extends Room<GameState> {
       if (this.state.tick - lair.lastSpawnTick < lair.spawnIntervalTicks) return;
       lair.lastSpawnTick = this.state.tick;
       if (!lair.roadId) return;
+
+      // Don't flood the map: each lair keeps a small standing warband
+      let alive = 0;
+      this.state.units.forEach(u => { if (u.isPvE && u.type === lair.type) alive++; });
+      if (alive >= PVE_MAX_ALIVE_PER_LAIR) return;
 
       const targetCityId = lair.type === 'spider'
         ? this.findResourceHoardingCity('food')
@@ -719,7 +727,7 @@ export class GameRoom extends Room<GameState> {
       const hostiles = besiegers.filter(u => this.state.units.has(u.id) && u.ownerId !== city.ownerId);
       if (hostiles.length === 0) return;
       const towers = this.buildingsOf(city.id).filter(b => b.type === 'defense_tower').length;
-      const defense = city.townHallLevel * 3 + towers * 10;
+      const defense = city.townHallLevel * 6 + towers * 12;
       const target = hostiles.reduce((lo, u) => (u.health < lo.health ? u : lo), hostiles[0]);
       target.health = Math.max(0, target.health - defense);
       if (target.health <= 0) {

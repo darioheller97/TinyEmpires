@@ -90,7 +90,8 @@ export default function TechTreeModal({ visible, researched, gold, techs, onRese
           </div>
         ))}
 
-        <button style={{ ...BUTTON_RED, display: 'block', margin: '10px auto 0', fontSize: '12px' }} onClick={onClose}>
+        <button style={{ ...BUTTON_RED, display: 'flex', alignItems: 'center', gap: '4px', margin: '10px auto 0', fontSize: '12px' }} onClick={onClose}>
+          <img src="/assets/UI/Icons/Regular_01.png" alt="x" style={{ width: 20, height: 20, imageRendering: 'pixelated' }} />
           Close
         </button>
       </div>
