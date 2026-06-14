@@ -2,7 +2,8 @@ import Phaser from 'phaser';
 import { GameClient } from '../network/GameClient';
 import { preloadAssets, createAnims, unitSkin, factionOf } from './assets';
 import { buildTerrain, TerrainInfo, TILE, WATER, GRASS, ELEV } from './terrain';
-import { initAudio, startAmbient, playSfx, setBattleIntensity, resetAmbient } from './audio';
+import { initAudio, startAmbient, playSfx, setBattleIntensity, resetAmbient, cameraPunch } from './audio';
+import { applySceneFx, getGfxQuality, SceneFx, GfxQuality } from './postfx';
 
 interface NodeInfo { id: string; x: number; y: number; name: string; kind: 'city' | 'intersection' | 'lair'; }
 interface RoadData { id: string; fromId: string; toId: string; splinePoints: { x: number; y: number }[]; tilePath: { c: number; r: number }[]; }
@@ -168,6 +169,8 @@ export default class GameScene extends Phaser.Scene {
   private cloudSprites: { sprite: Phaser.GameObjects.Sprite; tile: number }[] = [];
   private minimapRoads: { pts: { x: number; y: number }[] }[] | null = null;
   private dayNight: Phaser.GameObjects.Rectangle | null = null; // slow ambient tint overlay
+  private sceneFx: SceneFx | null = null;   // day/night grade + vignette overlay
+  private gfxQuality: GfxQuality = 'off';
 
   // Juice bookkeeping: a startup grace window so the first state sync doesn't pop
   // every existing unit/building; phase + tech diffing for level-up/win flourishes;
@@ -217,6 +220,36 @@ export default class GameScene extends Phaser.Scene {
     // always covers the viewport regardless of window size.
     this.dayNight = this.add.rectangle(-200, -200, 6000, 6000, 0x0b1834, 0)
       .setOrigin(0).setScrollFactor(0).setDepth(58);
+    this.ensureBlobShadow();
+    // Cosmetic polish (day/night colour grade + vignette), gated behind the
+    // Graphics quality setting. Grounding shadows and combat hit-flashes are
+    // always on (negligible cost, big readability win).
+    this.applyGraphicsQuality(getGfxQuality());
+  }
+
+  // A soft elliptical drop-shadow texture, generated once and reused under every
+  // unit/building so they read as sitting on the ground rather than floating.
+  private ensureBlobShadow(): void {
+    if (this.textures.exists('fx_blob')) return;
+    const w = 64, h = 30;
+    const tex = this.textures.createCanvas('fx_blob', w, h);
+    if (!tex) return;
+    const ctx = tex.getContext();
+    const g = ctx.createRadialGradient(w / 2, h / 2, 1, w / 2, h / 2, w / 2);
+    g.addColorStop(0, 'rgba(0,0,0,0.42)');
+    g.addColorStop(0.7, 'rgba(0,0,0,0.22)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    tex.refresh();
+  }
+
+  /** (Re)build the grade + vignette overlay for a quality level. Called on
+   *  create and from the Settings menu. Cosmetic only — never touches gameplay. */
+  applyGraphicsQuality(quality: GfxQuality): void {
+    this.gfxQuality = quality;
+    this.sceneFx?.destroy();
+    this.sceneFx = this.dayNight ? applySceneFx(this, this.dayNight, quality) : null;
   }
 
   update(time: number, delta: number): void {
@@ -236,13 +269,12 @@ export default class GameScene extends Phaser.Scene {
     }
     if (this.castActive) this.updateRhythmCast();
 
-    // Gentle day→dusk→night→dawn tint over a ~6-minute cycle. Starts at day.
-    if (this.dayNight) {
+    // Gentle day→dusk→night→dawn cycle over ~6 minutes. Starts at day. The grade
+    // helper re-colours the tint (and vignette) for the current quality level.
+    if (this.sceneFx) {
       const phase = (time % 360000) / 360000;          // 0..1
       const darkness = (1 - Math.cos(phase * Math.PI * 2)) / 2; // 0 day → 1 night
-      // Cool blue at night, a touch warmer (dusk/dawn) on the way there.
-      const colour = darkness > 0.5 ? 0x0b1834 : 0x241a2e;
-      this.dayNight.setFillStyle(colour, darkness * 0.3);
+      this.sceneFx.grade(darkness);
     }
 
     this.unitGfx.forEach(u => {
@@ -689,6 +721,8 @@ export default class GameScene extends Phaser.Scene {
     const existing = this.buildingGfx.get(b.id);
     if (existing) { Object.assign(existing.data, b); return; }
     const container = this.add.container(b.x, b.y);
+    // Grounding drop-shadow beneath the structure (added first → behind it).
+    container.add(this.add.image(0, this.rtsScale(2), 'fx_blob').setScale(this.rtsScale(1.7), this.rtsScale(0.85)).setAlpha(0.5));
     const city = this.cityGfx.get(b.cityId);
     const color = factionOf(city ? this.playerColors.get(city.data.ownerId) : undefined);
 
@@ -1120,6 +1154,9 @@ export default class GameScene extends Phaser.Scene {
     const container = this.add.container(pos.x, pos.y);
     // Combat units get the bigger field scale; villagers stay worker-sized.
     const uScale = unit.type === 'villager' ? this.rtsScale(skin.scale) : this.rtsUnitScale(skin.scale);
+    // Grounding drop-shadow under the feet (behind the sprite).
+    const shadow = this.add.image(0, 14, 'fx_blob').setScale(uScale * 0.95, uScale * 0.7).setAlpha(0.55);
+    container.add(shadow);
     const sprite = this.add.sprite(0, 0, `${skin.base}_idle`).setScale(uScale);
     const animKey = `${skin.base}_${desiredAnim}`;
     sprite.play(animKey);
@@ -2412,7 +2449,8 @@ export default class GameScene extends Phaser.Scene {
       const be = this.buildingGfx.get(b.id);
       if (be) {
         be.data.constructing = b.constructing; be.data.buildProgress = b.buildProgress;
-        const img = (be.gfx.list || [])[0] as any;
+        // list[0] is now the grounding shadow; the building sprite sits at [1].
+        const img = (be.gfx.list || [])[1] as any;
         be.gfx.setAlpha(b.constructing ? 0.55 : 1);
         if (img) { if (b.constructing && img.setTint) img.setTint(0x88bbff); else if (img.clearTint) img.clearTint(); }
         // Show the damage bar once a finished building drops below full health.
@@ -2472,6 +2510,10 @@ export default class GameScene extends Phaser.Scene {
           const counter = this.isCounterHit(pos.x, pos.y, u.ownerId, u.type);
           this.showFloatingDamage(pos.x, pos.y, prevHp - u.health, counter ? '#ffd54a' : '#ff4444', counter);
           this.impactBurst(pos.x, pos.y, counter);
+          // A small kick on heavy, on-screen blows for combat punch.
+          if (prevHp - u.health >= 28 && this.cameras.main.worldView.contains(pos.x, pos.y)) {
+            cameraPunch(0.003, 110);
+          }
         }
         this.flashUnit(u.id);
         this.recoilUnit(u.id);

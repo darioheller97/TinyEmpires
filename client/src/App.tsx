@@ -396,6 +396,7 @@ export default function App() {
       <SettingsMenu
         visible={settingsOpen}
         onHowToPlay={() => { setSettingsOpen(false); setShowHelp(true); }}
+        onGraphicsQuality={(q) => sceneRef.current?.applyGraphicsQuality(q)}
         onClose={() => setSettingsOpen(false)}
       />
 
