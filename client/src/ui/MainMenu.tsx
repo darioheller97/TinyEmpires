@@ -45,11 +45,16 @@ function Segmented<T extends string | number>(
   );
 }
 
-const DEFAULTS: MatchSettings = { mapSize: 'medium', npcCount: 2, npcAggro: 1, npcPower: 1, aiLevel: 'normal' };
+const DEFAULTS: MatchSettings = { mapSize: 'medium', npcCount: 2, npcAggro: 1, npcPower: 1, aiLevel: 'normal', gameMode: 'beat' };
 
 function SettingsForm({ settings, set }: { settings: MatchSettings; set: (s: MatchSettings) => void }) {
   return (
     <div style={{ textAlign: 'left', margin: '6px 0 16px' }}>
+      <div style={{ ...ROW, borderBottom: '1px solid rgba(107,79,46,0.3)', paddingBottom: 8 }}>
+        <span style={LABEL}>Game mode</span>
+        <Segmented value={settings.gameMode!} onChange={v => set({ ...settings, gameMode: v })}
+          options={[{ label: 'Beat', val: 'beat' }, { label: 'Open Field', val: 'rts' }]} />
+      </div>
       <div style={ROW}>
         <span style={LABEL}>Map size</span>
         <Segmented value={settings.mapSize!} onChange={v => set({ ...settings, mapSize: v })}

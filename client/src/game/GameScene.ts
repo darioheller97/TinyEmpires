@@ -32,6 +32,7 @@ export interface BuildData {
   id: string; cityId: string; type: string; x: number; y: number; level: number;
   health: number; maxHealth: number; autoProduceType: string;
   produceReadyTick?: number; cooldownReadyIn?: number;
+  constructing?: boolean; buildProgress?: number;
 }
 export interface LairData { id: string; x: number; y: number; type: string; health: number; maxHealth: number; }
 // A drawn city: its container, live data, and the battlement archers (count
@@ -70,6 +71,7 @@ export interface MinimapData {
 }
 
 const DEPTH_ENTITY = 10; // + y*0.01 for painter's order
+const COMBAT_BACK = 11;  // px a fighting unit backs off the clash tile (per side)
 
 // Mirror of the server's counter triangle (attacker type → the type it beats),
 // used client-side to emphasise favourable hits with extra juice. Kept in sync
@@ -94,6 +96,16 @@ interface UnitVisual {
 export default class GameScene extends Phaser.Scene {
   private client: GameClient | null = null;
   private mapBuilt = false;
+  private rtsMode = false; // 'Open Field' RTS mode: free movement, real-time combat
+  // RTS selection/command state
+  private rtsSel = new Set<string>();
+  private rtsDragStart: { x: number; y: number } | null = null;
+  private rtsSelBox: Phaser.GameObjects.Graphics | null = null;
+  private rtsSelRings: Phaser.GameObjects.Graphics | null = null;
+  private rtsFormation: 'box' | 'line' = 'box';
+  private rtsTrailGfx: Phaser.GameObjects.Graphics | null = null;
+  private rtsTrailCount = -1;
+  private rtsBuild: { type: string; img: Phaser.GameObjects.Image; ok: boolean } | null = null;
   private mapW = 1920;
   private mapH = 1216;
 
@@ -213,8 +225,11 @@ export default class GameScene extends Phaser.Scene {
     if (this.beatClock === 0) this.beatClock = time;
     while (time - this.beatClock >= BEAT_MS) {
       this.beatClock += BEAT_MS;
-      playSfx('beat_drum', { volume: 0.7, throttleMs: 400, throttleKey: 'beat' });
-      this.swingCombatUnits(); // engaged units strike on the beat, with the drum
+      // Open Field is real-time: no marching drum, no beat-locked swings.
+      if (!this.rtsMode) {
+        playSfx('beat_drum', { volume: 0.7, throttleMs: 400, throttleKey: 'beat' });
+        this.swingCombatUnits(); // engaged units strike on the beat, with the drum
+      }
     }
     if (this.castActive) this.updateRhythmCast();
 
@@ -232,8 +247,9 @@ export default class GameScene extends Phaser.Scene {
       if (!pos) return;
       const c = u.container;
 
-      // Villagers stroll smoothly toward their free-roam target.
-      if (c.getData('isVillager') === true) {
+      // Villagers (always) and every unit in RTS mode glide smoothly toward
+      // their free-roam target — no beat-locked hop.
+      if (this.rtsMode || c.getData('isVillager') === true) {
         const dx = pos.x - c.x, dy = pos.y - c.y;
         if (Math.abs(dx) > 0.8) u.sprite.setFlipX(dx < 0);
         c.x += dx * 0.25; c.y += dy * 0.25;
@@ -258,6 +274,12 @@ export default class GameScene extends Phaser.Scene {
         const ddx = pos.x - c.x;
         if (Math.abs(ddx) > 0.8) u.sprite.setFlipX(ddx < 0);
         const stepping = Math.hypot(ddx, pos.y - c.y) > 4;
+        // Remember the march heading so that when the column stops to fight we can
+        // hold each rank's facing and pull it back off the clash tile.
+        if (stepping) {
+          const fl = Math.hypot(ddx, pos.y - c.y) || 1;
+          c.setData('faceVec', { x: ddx / fl, y: (pos.y - c.y) / fl });
+        }
         // Re-anchor the metronome to this real step so the pulse lands exactly
         // on the beat the troops move to (the constant clock above keeps it
         // going when nothing is marching). Phase-only — the play is up there.
@@ -281,7 +303,21 @@ export default class GameScene extends Phaser.Scene {
       // Rank stagger: shift each unit a little perpendicular to its march so a
       // column reads as 2–3 ranks abreast rather than one overlapping file.
       const ro = (c.getData('rankOff') as number) || 0;
-      if (ro && moving) {
+      if (c.getData('fighting') === true) {
+        // Stopped to fight: two enemy ranks otherwise land on the same tile and
+        // overlap. Hold the last march heading to pull each unit back off the
+        // clash point (so the two lines part) and keep its perpendicular rank
+        // offset — a readable melee instead of one stacked blob. (`moving` stays
+        // true while engaged since it reflects the last hop's span, so this runs
+        // in its place rather than gated behind it.)
+        const fv = c.getData('faceVec') as { x: number; y: number } | undefined;
+        if (fv) {
+          c.x += -fv.x * COMBAT_BACK + -fv.y * ro;
+          c.y += -fv.y * COMBAT_BACK + fv.x * ro;
+        } else {
+          c.y += ro; // no heading yet — at least spread the ranks vertically
+        }
+      } else if (ro && moving) {
         const dx = to.x - from.x, dy = to.y - from.y, l = Math.hypot(dx, dy) || 1;
         c.x += (-dy / l) * ro;
         c.y += (dx / l) * ro;
@@ -289,6 +325,23 @@ export default class GameScene extends Phaser.Scene {
       u.sprite.y = moving ? -12 * Math.sin(h * Math.PI) : 0;
       c.setDepth(DEPTH_ENTITY + c.y * 0.01);
     });
+
+    // RTS is real-time (no beat swing), so engaged archers loose arrows on their
+    // own cadence here rather than in swingCombatUnits.
+    if (this.rtsMode) this.tickRtsArchers(time);
+
+    // RTS: redraw selection rings under the currently selected units.
+    if (this.rtsMode && this.rtsSel.size > 0) {
+      this.ensureRtsGfx();
+      const g = this.rtsSelRings!; g.clear(); g.lineStyle(2, 0x7CFC00, 0.9);
+      this.rtsSel.forEach(id => {
+        const u = this.unitGfx.get(id);
+        if (!u) { this.rtsSel.delete(id); return; }
+        g.strokeEllipse(u.container.x, u.container.y + 8, 30, 18);
+      });
+    } else if (this.rtsSelRings) {
+      this.rtsSelRings.clear();
+    }
   }
 
   // ── Map construction from server state ────────────────────
@@ -557,9 +610,13 @@ export default class GameScene extends Phaser.Scene {
     this.cityGfx.set(city.id, entry);
   }
 
+  // Open Field renders units & buildings larger (tiles stay 64px). Beat mode is
+  // unchanged. ~1.6× turns the 0.62 unit scale into roughly "size 1".
+  private rtsScale(base: number): number { return this.rtsMode ? base * 1.6 : base; }
+
   // The keep grows with its town-hall level so progress reads at a glance.
   private castleScale(level: number): number {
-    return 0.7 + (Math.max(1, Math.min(3, level || 1)) - 1) * 0.08;
+    return this.rtsScale(0.7 + (Math.max(1, Math.min(3, level || 1)) - 1) * 0.08);
   }
 
   // Archer positions (container-relative x) for each castle level.
@@ -581,7 +638,9 @@ export default class GameScene extends Phaser.Scene {
     }
     entry.archers.forEach(a => a.destroy());
     entry.archers = offsets.map(dx => {
-      const ar = this.add.sprite(dx, -56, `u_${acolor}_archer_idle`).setScale(0.62);
+      // Match the castle's RTS scale so the battlement archer isn't tiny and
+      // stays seated on the (enlarged) parapet.
+      const ar = this.add.sprite(this.rtsScale(dx), this.rtsScale(-56), `u_${acolor}_archer_idle`).setScale(this.rtsScale(0.62));
       if (dx > 0) ar.setFlipX(true);
       ar.play(`u_${acolor}_archer_idle`);
       if (!data.ownerId) ar.setTint(0x8f9aa6);
@@ -625,19 +684,20 @@ export default class GameScene extends Phaser.Scene {
     if (b.type === 'house') {
       // Pick one of three house variants deterministically from the id
       const variant = ['house2a', 'house2b', 'house2c'][Math.abs(this.hashStr(b.id)) % 3];
-      container.add(this.add.image(0, 0, `${variant}_${color}`).setScale(0.55).setOrigin(0.5, 0.72));
+      container.add(this.add.image(0, 0, `${variant}_${color}`).setScale(this.rtsScale(0.55)).setOrigin(0.5, 0.72));
     } else if (b.type === 'barracks') {
-      container.add(this.add.image(0, 0, `barracks2_${color}`).setScale(0.5).setOrigin(0.5, 0.7));
+      container.add(this.add.image(0, 0, `barracks2_${color}`).setScale(this.rtsScale(0.5)).setOrigin(0.5, 0.7));
     } else if (b.type === 'archery') {
-      container.add(this.add.image(0, 0, `archery_${color}`).setScale(0.5).setOrigin(0.5, 0.7));
+      container.add(this.add.image(0, 0, `archery_${color}`).setScale(this.rtsScale(0.5)).setOrigin(0.5, 0.7));
     } else if (b.type === 'church') {
-      container.add(this.add.image(0, 0, `monastery_${color}`).setScale(0.5).setOrigin(0.5, 0.7));
+      container.add(this.add.image(0, 0, `monastery_${color}`).setScale(this.rtsScale(0.5)).setOrigin(0.5, 0.7));
     } else { // defense_tower — pack tower with an archer posted on top
-      container.add(this.add.image(0, 0, `tower2_${color}`).setScale(0.5).setOrigin(0.5, 0.72));
-      const ar = this.add.sprite(0, -34, `u_${color}_archer_idle`).setScale(0.4);
+      container.add(this.add.image(0, 0, `tower2_${color}`).setScale(this.rtsScale(0.62)).setOrigin(0.5, 0.72));
+      const ar = this.add.sprite(0, this.rtsScale(-44), `u_${color}_archer_idle`).setScale(this.rtsScale(0.42));
       ar.play(`u_${color}_archer_idle`);
       container.add(ar);
     }
+    if ((b as any).constructing) container.setData('constructing', true);
 
     container.setDepth(DEPTH_ENTITY + b.y * 0.01);
     container.setInteractive(new Phaser.Geom.Rectangle(-26, -40, 52, 64), Phaser.Geom.Rectangle.Contains);
@@ -978,24 +1038,34 @@ export default class GameScene extends Phaser.Scene {
     // while working; while hauling home they carry the matching load.
     if (isVillager) {
       const res = unit.resourceType; // 'tree' | 'sheep' | 'gold'
-      if (unit.carrying > 0 && desiredAnim === 'walk') {
+      if (unit.status === 'building') {
+        desiredAnim = 'build'; // hammer animation while raising a construction site
+      } else if (unit.carrying > 0 && desiredAnim === 'walk') {
         desiredAnim = res === 'gold' ? 'carrygold' : res === 'sheep' ? 'carrymeat' : 'carrywood';
       } else if (desiredAnim === 'attack') {
         desiredAnim = res === 'gold' ? 'mine' : res === 'sheep' ? 'butcher' : 'attack';
       }
     } else if (fighting) {
-      // Combatants strike once per beat (swingCombatUnits); between blows they
-      // hold an idle stance rather than looping the attack — looping read as a
-      // frantic, off-beat flurry (lancer/knight especially).
-      desiredAnim = 'idle';
+      // Beat mode: strike once per beat (swingCombatUnits), holding idle between
+      // blows. RTS is real-time with no beat swing, so loop the attack animation
+      // continuously while engaged (otherwise units just stand idle and fighting).
+      desiredAnim = this.rtsMode ? 'attack' : 'idle';
     }
-    // A combatant's sprite is driven by the beat swing, not the status anim.
-    const combatant = fighting && !isVillager;
+    // A monk that healed in the last few ticks is actively channeling: loop its
+    // Heal animation (mapped to the 'attack' state) regardless of march/fight.
+    const healing = unit.type === 'monk' && unit.healingTick > 0
+      && (this.serverTick - unit.healingTick) <= 6;
+    if (healing) desiredAnim = 'attack';
+    // A combatant's sprite is driven by the beat swing, not the status anim — but
+    // a channeling monk loops its heal anim instead of being beat-swung. In RTS
+    // there's no beat swing, so engaged units loop their attack anim like anyone.
+    const combatant = fighting && !isVillager && !healing && !this.rtsMode;
 
     if (existing) {
       if (pos) existing.container.setData('worldPos', pos);
       existing.container.setData('targetResourceId', unit.targetResourceId);
       existing.container.setData('fighting', combatant);
+      existing.container.setData('inCombat', fighting); // mode-agnostic (RTS archers fire on this)
       existing.container.setData('order', unit.order || '');
       existing.container.setData('laneKey', this.laneKeyOf(unit.roadId));
       const animKey = `${existing.base}_${desiredAnim}`;
@@ -1016,13 +1086,22 @@ export default class GameScene extends Phaser.Scene {
       existing.container.setData('hpRatio', ratio);
       this.setBarRatio(existing.hpBar, ratio);
       existing.hpBar.setVisible(unit.health < unit.maxHealth);
+      // Pop the heal glow once per server heal pulse (healingTick advances each
+      // time the monk channels), aligned to the monk's current position.
+      if (healing) {
+        const lastFx = existing.container.getData('healFxTick') as number | undefined;
+        if (unit.healingTick !== lastFx) {
+          existing.container.setData('healFxTick', unit.healingTick);
+          this.spawnHealEffect(existing.container.x, existing.container.y, this.playerColors.get(unit.ownerId));
+        }
+      }
       return;
     }
     if (!pos) return;
 
     const skin = unitSkin(unit.type, this.playerColors.get(unit.ownerId));
     const container = this.add.container(pos.x, pos.y);
-    const sprite = this.add.sprite(0, 0, `${skin.base}_idle`).setScale(skin.scale);
+    const sprite = this.add.sprite(0, 0, `${skin.base}_idle`).setScale(this.rtsScale(skin.scale));
     const animKey = `${skin.base}_${desiredAnim}`;
     sprite.play(animKey);
     const hpBar = this.makeBar(30, 9).setPosition(0, -34);
@@ -1041,6 +1120,7 @@ export default class GameScene extends Phaser.Scene {
     container.setData('isVillager', unit.type === 'villager');
     container.setData('unitType', unit.type);
     container.setData('fighting', combatant);
+    container.setData('inCombat', fighting);
     container.setData('order', unit.order || '');
     container.setData('laneKey', this.laneKeyOf(unit.roadId));
     container.setData('targetResourceId', unit.targetResourceId);
@@ -1119,6 +1199,33 @@ export default class GameScene extends Phaser.Scene {
         if (target) this.fireArrow(u.container.x, u.container.y - 12, target.x, target.y, u.base.split('_')[1]);
       }
     });
+  }
+
+  // RTS real-time archer fire: each engaged archer looses an arrow on its own
+  // ~1s cadence at the nearest enemy in range (the server applies the damage).
+  private tickRtsArchers(time: number): void {
+    this.unitGfx.forEach(u => {
+      if (u.container.getData('unitType') !== 'archer') return;
+      if (u.container.getData('inCombat') !== true || !u.container.visible) return;
+      const last = (u.container.getData('lastArrowMs') as number) || 0;
+      if (time - last < 950) return;
+      const ownerId = u.container.getData('ownerId') as string;
+      const target = this.nearestEnemyNear(u.container.x, u.container.y, ownerId, 380);
+      if (!target) return;
+      u.container.setData('lastArrowMs', time);
+      this.fireArrow(u.container.x, u.container.y - 12, target.x, target.y, u.base.split('_')[1]);
+    });
+  }
+
+  // A monk's heal effect (pack art): a one-shot glow that blooms over the monk
+  // each time it channels, tinted to the healer's faction, with a soft chime.
+  private spawnHealEffect(x: number, y: number, hex?: string): void {
+    const key = `u_${factionOf(hex)}_monk_heal_fx`;
+    if (!this.anims.exists(key)) return;
+    const fx = this.add.sprite(x, y - 6, key).setScale(0.62).setDepth(DEPTH_ENTITY + y * 0.01 + 0.6);
+    fx.play(key);
+    fx.once('animationcomplete', () => fx.destroy());
+    playSfx('unit_recruit', { volume: 0.16, rate: 1.5, throttleMs: 380, throttleKey: 'heal', x, y });
   }
 
   private removeUnitVisual(id: string, died: boolean): void {
@@ -1208,8 +1315,24 @@ export default class GameScene extends Phaser.Scene {
     // (Field archers now loose their arrows on the beat in swingCombatUnits.)
   }
 
+  // Draw the worn footpaths synced from the server (only when the set changes).
+  private syncTrails(state: any): void {
+    const n = state.trails.size as number;
+    if (n === this.rtsTrailCount) return;
+    this.rtsTrailCount = n;
+    if (!this.rtsTrailGfx) this.rtsTrailGfx = this.add.graphics().setDepth(1);
+    const g = this.rtsTrailGfx; g.clear(); g.fillStyle(0x9b7a4d, 0.33);
+    const cols = Math.ceil(this.mapW / TILE);
+    state.trails.forEach((_v: number, key: string) => {
+      const idx = parseInt(key, 10);
+      const c = idx % cols, r = Math.floor(idx / cols);
+      g.fillRect(c * TILE + 4, r * TILE + 4, TILE - 8, TILE - 8);
+    });
+  }
+
   private getUnitWorldPos(unit: any): { x: number; y: number } | null {
-    if (unit.type === 'villager') return { x: unit.x, y: unit.y };
+    // RTS: every unit is free-position (x/y authoritative). Villagers always are.
+    if (this.rtsMode || unit.type === 'villager') return { x: unit.x, y: unit.y };
     if (unit.atNodeId) {
       const node = this.nodes.get(unit.atNodeId);
       if (!node) return null;
@@ -1643,6 +1766,7 @@ export default class GameScene extends Phaser.Scene {
   // ── Rhythm cast: the Rally ability is cast as an osu!-style beat combo ──
   /** Start the rhythm cast for the selected army (from the R key or HUD button). */
   castRally(): void {
+    if (this.rtsMode) return; // no Rally rhythm-cast in Open Field (real-time mode)
     if (this.castActive || this.selection.type !== 'army' || !this.selArmyRoadId) return;
     if (this.serverTick < this.myRallyReadyTick) return; // still on cooldown
     this.castActive = true;
@@ -1851,6 +1975,13 @@ export default class GameScene extends Phaser.Scene {
   private setupCameraControls(): void {
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (this.towerPlace) this.updateTowerGhost(p);
+      if (this.rtsMode) {
+        if (this.rtsBuild) { this.updateRtsBuildGhost(p); if (p.isDown && p.rightButtonDown()) this.panCamera(p); return; }
+        // RTS: right-drag pans the camera, left-drag draws a selection box.
+        if (p.isDown && p.rightButtonDown()) { this.dragMoved = true; this.panCamera(p); }
+        else if (p.isDown && p.leftButtonDown()) this.rtsUpdateDrag(p);
+        return;
+      }
       if (p.isDown && p.leftButtonDown()) {
         const dx = p.x - p.prevPosition.x;
         const dy = p.y - p.prevPosition.y;
@@ -1862,7 +1993,10 @@ export default class GameScene extends Phaser.Scene {
     this.input.on('wheel', (_p: Phaser.Input.Pointer, _objs: unknown[], _dx: number, dy: number) => {
       this.cameras.main.setZoom(Phaser.Math.Clamp(this.cameras.main.zoom - dy * 0.001, 0.3, 2));
     });
-    this.input.on('pointerdown', () => { this.dragMoved = false; });
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      this.dragMoved = false;
+      if (this.rtsMode && p.leftButtonDown()) this.rtsDragStart = { x: p.x, y: p.y };
+    });
     this.input.keyboard?.on('keydown-ESC', () => this.cancelTowerPlacement());
     // R rotates the selected crossroad's route arrow to the next exit.
     this.input.keyboard?.on('keydown-R', () => this.rotateIntersectionRoute());
@@ -1871,6 +2005,7 @@ export default class GameScene extends Phaser.Scene {
     this.input.mouse?.disableContextMenu();
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (!p.rightButtonDown()) return;
+      if (this.rtsMode) { if (this.rtsBuild) this.cancelRtsBuild(); else if (this.towerPlace) this.cancelTowerPlacement(); return; } // RTS: right = pan/command (or cancel build)
       if (this.towerPlace) { this.cancelTowerPlacement(); return; } // right-click aborts placement
       // Any production building (barracks/archery/church) can set the rally road.
       if (this.selection.type !== 'building' || !['barracks', 'archery', 'church'].includes(this.selection.data?.type)) return;
@@ -1889,8 +2024,7 @@ export default class GameScene extends Phaser.Scene {
       if (best) { this.client?.setBuildingRally(this.selection.id, best.id); this.flashRally(best); }
     });
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
-      if (this.dragMoved) return;
-      if (this.towerPlace) {
+      if (this.towerPlace && !this.dragMoved) {
         const w = this.cameras.main.getWorldPoint(p.x, p.y);
         const s = this.snapTile(w.x, w.y);
         if (this.towerSpotValid(s.x, s.y)) {
@@ -1900,6 +2034,12 @@ export default class GameScene extends Phaser.Scene {
         }
         return; // swallow the click while placing
       }
+      if (this.rtsMode) {
+        if (p.button === 2) { if (!this.dragMoved) this.rtsRightCommand(p); return; } // right-click = command
+        this.rtsEndDrag(p); // left release = finalize box/click selection
+        return;
+      }
+      if (this.dragMoved) return;
       // During a rhythm cast, a tap anywhere is a beat hit (not a selection).
       if (this.castActive) { this.handleRhythmHit(); return; }
       const hits = this.input.hitTestPointer(p);
@@ -1916,6 +2056,136 @@ export default class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-THREE', () => this.issueArmyOrder('fallback'));
     this.input.keyboard?.on('keydown-R', () => this.castRally());
     this.input.keyboard?.on('keydown-SPACE', () => { if (this.castActive) this.handleRhythmHit(); });
+    // RTS: F toggles the move formation; B/H/Y/U enter build placement; ESC cancels.
+    this.input.keyboard?.on('keydown-F', () => { if (this.rtsMode) this.rtsFormation = this.rtsFormation === 'box' ? 'line' : 'box'; });
+    this.input.keyboard?.on('keydown-B', () => this.startRtsBuild('barracks'));
+    this.input.keyboard?.on('keydown-H', () => this.startRtsBuild('house'));
+    this.input.keyboard?.on('keydown-Y', () => this.startRtsBuild('archery'));
+    this.input.keyboard?.on('keydown-U', () => this.startRtsBuild('church'));
+    this.input.keyboard?.on('keydown-ESC', () => { if (this.rtsMode) { this.cancelRtsBuild(); this.rtsApplySelection([]); } });
+  }
+
+  // ── RTS (Open Field) selection & commands ──
+  private panCamera(p: Phaser.Input.Pointer): void {
+    const dx = p.x - p.prevPosition.x, dy = p.y - p.prevPosition.y;
+    this.cameras.main.scrollX -= dx / this.cameras.main.zoom;
+    this.cameras.main.scrollY -= dy / this.cameras.main.zoom;
+  }
+
+  private ensureRtsGfx(): void {
+    if (!this.rtsSelBox) this.rtsSelBox = this.add.graphics().setScrollFactor(0).setDepth(240);
+    if (!this.rtsSelRings) this.rtsSelRings = this.add.graphics().setDepth(9);
+  }
+
+  private rtsUpdateDrag(p: Phaser.Input.Pointer): void {
+    if (!this.rtsDragStart) return;
+    const dx = p.x - this.rtsDragStart.x, dy = p.y - this.rtsDragStart.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) this.dragMoved = true;
+    if (!this.dragMoved) return;
+    this.ensureRtsGfx();
+    const g = this.rtsSelBox!; g.clear();
+    g.lineStyle(1.5, 0x7CFC00, 0.95).fillStyle(0x7CFC00, 0.12);
+    const x = Math.min(this.rtsDragStart.x, p.x), y = Math.min(this.rtsDragStart.y, p.y);
+    g.fillRect(x, y, Math.abs(dx), Math.abs(dy)); g.strokeRect(x, y, Math.abs(dx), Math.abs(dy));
+  }
+
+  private rtsEndDrag(p: Phaser.Input.Pointer): void {
+    if (this.rtsBuild) {
+      if (!this.dragMoved) {
+        const w = this.cameras.main.getWorldPoint(p.x, p.y);
+        const s = this.snapTile(w.x, w.y);
+        this.client?.buildAt(this.rtsBuild.type, s.x, s.y);
+        playSfx('build_place', { volume: 0.5 });
+      }
+      this.cancelRtsBuild(); this.rtsDragStart = null; return;
+    }
+    const start = this.rtsDragStart; this.rtsDragStart = null;
+    if (this.rtsSelBox) this.rtsSelBox.clear();
+    if (this.dragMoved && start && Math.abs(p.x - start.x) + Math.abs(p.y - start.y) > 6) {
+      const a = this.cameras.main.getWorldPoint(Math.min(start.x, p.x), Math.min(start.y, p.y));
+      const b = this.cameras.main.getWorldPoint(Math.max(start.x, p.x), Math.max(start.y, p.y));
+      const ids: string[] = [];
+      this.unitGfx.forEach((u, id) => {
+        if (u.container.getData('isVillager') === true) return;
+        if (u.container.getData('ownerId') !== this.client?.sessionId) return;
+        const x = u.container.x, y = u.container.y;
+        if (x >= a.x && x <= b.x && y >= a.y && y <= b.y) ids.push(id);
+      });
+      this.rtsApplySelection(ids);
+      return;
+    }
+    // Single click: let an interactive entity (city/building) handle it; else
+    // select a single unit under the cursor, or clear.
+    const hits = this.input.hitTestPointer(p);
+    if (hits.some(h => (h as any).input && (h as any).input.enabled)) return;
+    const world = this.cameras.main.getWorldPoint(p.x, p.y);
+    const one = this.rtsUnitAt(world, false);
+    if (one) this.rtsApplySelection([one]);
+    else { this.rtsApplySelection([]); this.clearSelection(); }
+  }
+
+  /** Nearest own (or enemy, if `enemy`) non-villager unit within 26px of a point. */
+  private rtsUnitAt(world: { x: number; y: number }, enemy: boolean): string | null {
+    let best: string | null = null, bestD = 26;
+    this.unitGfx.forEach((u, id) => {
+      if (u.container.getData('isVillager') === true) return;
+      const own = u.container.getData('ownerId') === this.client?.sessionId;
+      if (enemy ? own : !own) return;
+      const d = Math.hypot(u.container.x - world.x, u.container.y - world.y);
+      if (d < bestD) { bestD = d; best = id; }
+    });
+    return best;
+  }
+
+  private rtsApplySelection(ids: string[]): void {
+    this.rtsSel = new Set(ids);
+    if (ids.length > 0) this.clearSelection(); // close any entity panel
+    // Push a lightweight readout to React (count + formation).
+    const cb = this.game.registry.get('onUnitSelection') as ((n: number, f: string) => void) | undefined;
+    cb?.(this.rtsSel.size, this.rtsFormation);
+  }
+
+  private rtsRightCommand(p: Phaser.Input.Pointer): void {
+    if (this.rtsSel.size === 0) return;
+    const world = this.cameras.main.getWorldPoint(p.x, p.y);
+    const ids = [...this.rtsSel];
+    const enemy = this.rtsUnitAt(world, true);
+    if (enemy) this.client?.attackMove(ids, world.x, world.y);
+    else this.client?.moveUnits(ids, world.x, world.y, this.rtsFormation);
+    this.pingMove(world.x, world.y, !!enemy);
+  }
+
+  // Enter free-placement mode for a building (RTS build-by-sight). A ghost
+  // follows the cursor; left-click sends build_at (server validates sight/enemies).
+  startRtsBuild(type: string): void {
+    if (!this.rtsMode || !this.client) return;
+    this.cancelRtsBuild();
+    const color = factionOf(this.playerColors.get(this.client.sessionId || ''));
+    const tex: Record<string, string> = { barracks: `barracks2_${color}`, house: `house2a_${color}`, archery: `archery_${color}`, church: `monastery_${color}` };
+    const scl: Record<string, number> = { barracks: 0.5, house: 0.55, archery: 0.5, church: 0.5 };
+    if (!tex[type]) return;
+    const img = this.add.image(0, 0, tex[type]).setScale(this.rtsScale(scl[type])).setOrigin(0.5, 0.7).setAlpha(0.6).setDepth(196);
+    this.rtsBuild = { type, img, ok: true };
+  }
+  private cancelRtsBuild(): void { if (this.rtsBuild) { this.rtsBuild.img.destroy(); this.rtsBuild = null; } }
+  private updateRtsBuildGhost(p: Phaser.Input.Pointer): void {
+    if (!this.rtsBuild) return;
+    const w = this.cameras.main.getWorldPoint(p.x, p.y);
+    const s = this.snapTile(w.x, w.y);
+    this.rtsBuild.img.setPosition(s.x, s.y);
+  }
+
+  // A quick expanding ring where a move/attack order was issued.
+  private pingMove(x: number, y: number, attack: boolean): void {
+    const ring = this.add.graphics().setDepth(8);
+    const col = attack ? 0xff5a4a : 0x7CFC00;
+    let r = 4;
+    const ev = this.time.addEvent({
+      delay: 16, repeat: 14, callback: () => {
+        r += 2.4; ring.clear(); ring.lineStyle(2, col, Math.max(0, 1 - r / 40)).strokeCircle(x, y, r);
+        if (ev.getRepeatCount() === 0) ring.destroy();
+      },
+    });
   }
 
   // ── Tower placement (free placement inside the city's influence) ──
@@ -1930,7 +2200,7 @@ export default class GameScene extends Phaser.Scene {
     const ring = this.add.graphics().setDepth(195);
     ring.lineStyle(3, 0xffe87a, 0.85).strokeCircle(d.x, d.y, radius);
     const highlight = this.add.graphics().setDepth(195.5);
-    const tower = this.add.image(0, 0, `tower2_${color}`).setScale(0.5).setOrigin(0.5, 0.72).setAlpha(0.75);
+    const tower = this.add.image(0, 0, `tower2_${color}`).setScale(0.62).setOrigin(0.5, 0.72).setAlpha(0.75);
     const ghost = this.add.container(d.x, d.y, [tower]).setDepth(196);
     this.towerPlace = { cityId, cx: d.x, cy: d.y, radius, ghost, tower, ring, highlight };
   }
@@ -1980,9 +2250,12 @@ export default class GameScene extends Phaser.Scene {
       state.players.forEach((p: any, id: string) => this.playerColors.set(id, p.colorHex));
     }
     this.serverTick = state.tick || 0;
+    this.rtsMode = state.gameMode === 'rts';
 
     if (!this.mapBuilt) {
-      if (!state.roads || state.roads.size === 0) return;
+      // Beat mode waits for the road network; RTS has no roads, so wait for cities.
+      if (this.rtsMode) { if (!state.cities || state.cities.size === 0) return; }
+      else if (!state.roads || state.roads.size === 0) return;
       this.buildMapFromState(state);
     }
 
@@ -2065,7 +2338,16 @@ export default class GameScene extends Phaser.Scene {
         id: b.id, cityId: b.cityId, type: b.type, x: b.x, y: b.y,
         level: b.level || 1, health: b.health, maxHealth: b.maxHealth,
         autoProduceType: b.autoProduceType || '', produceReadyTick: b.produceReadyTick || 0,
+        constructing: b.constructing, buildProgress: b.buildProgress,
       });
+      // Construction sites render translucent + blue-tinted until the pawn finishes.
+      const be = this.buildingGfx.get(b.id);
+      if (be) {
+        be.data.constructing = b.constructing; be.data.buildProgress = b.buildProgress;
+        const img = (be.gfx.list || [])[0] as any;
+        be.gfx.setAlpha(b.constructing ? 0.55 : 1);
+        if (img) { if (b.constructing && img.setTint) img.setTint(0x88bbff); else if (img.clearTint) img.clearTint(); }
+      }
       this.cityBuildingCounts.set(b.cityId, (this.cityBuildingCounts.get(b.cityId) || 0) + 1);
     });
     // Keep a selected building's panel live (auto-produce state + recruit cooldown).
@@ -2085,6 +2367,7 @@ export default class GameScene extends Phaser.Scene {
         if (this.selection.type === 'building' && this.selection.id === id) this.clearSelection();
       }
     });
+    if (this.rtsMode && state.trails) this.syncTrails(state);
     const onBuildingsUpdate = this.game.registry.get('onBuildingsUpdate') as ((c: Map<string, number>) => void);
     if (onBuildingsUpdate) onBuildingsUpdate(new Map(this.cityBuildingCounts));
 

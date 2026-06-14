@@ -67,7 +67,22 @@ export class UnitNode extends Schema {
   // Villagers: units of resource currently being hauled back to the city
   @type('number') carrying: number = 0;
 
+  // RTS (Open Field) mode: free 2D movement. x/y are authoritative for all units
+  // (not just villagers); tx/ty is the current move destination (synced so the
+  // client can draw a move marker). -1 = no destination.
+  @type('number') tx: number = -1;
+  @type('number') ty: number = -1;
+
   lastCombatTick: number = 0;
+  // RTS movement: cached A* waypoints (world points) + cursor; the order kind
+  // ('' idle | 'move' | 'attackmove') and a re-path throttle. Not synced.
+  navPath: { x: number; y: number }[] = [];
+  navStep: number = 0;
+  orderKind: string = '';
+  repathTick: number = 0;
+  // RTS: true while combat is steering this unit toward/at a target (so the
+  // command-follow mover yields to the chase/attack for that tick).
+  engaged: boolean = false;
   // Rally commander ability: while tick < rallyBuffUntil this unit hits harder,
   // by rallyBuffMult (set from the cast's rhythm accuracy).
   rallyBuffUntil: number = 0;
@@ -76,8 +91,14 @@ export class UnitNode extends Schema {
   targetNodeId: string = '';
   // Villagers: home city, current target node
   homeCityId: string = '';
+  // RTS: a pawn dispatched to raise a construction site channels it (status
+  // 'building') until done, then returns to gathering.
+  buildTargetId: string = '';
   // Synced so the client can highlight the node a clicked pawn is gathering.
   @type('string') targetResourceId: string = '';
+  // Tick a monk last healed an ally — synced so the client plays the monk's
+  // heal animation + heal effect while it's actively channeling (0 = never).
+  @type('number') healingTick: number = 0;
 
   constructor(id: string, ownerId: string, type: string, roadId: string) {
     super();

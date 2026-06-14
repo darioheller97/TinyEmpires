@@ -21,6 +21,7 @@ export interface MatchSettings {
   npcAggro?: number;
   npcPower?: number;
   aiLevel?: string;   // easy | normal | hard (rival AI skill)
+  gameMode?: string;  // beat | rts (Open Field)
 }
 
 // Friendly room code: no ambiguous 0/O/1/I. Must match the server charset.
@@ -121,6 +122,22 @@ export class GameClient {
 
   buildStructure(cityId: string, type: string): void {
     this.room?.send('build_structure', { cityId, type });
+  }
+
+  // ── RTS (Open Field) commands ──
+  /** Move a set of units to a point, arranged in a formation. */
+  moveUnits(ids: string[], x: number, y: number, formation = 'box'): void {
+    this.room?.send('move_units', { ids, x, y, formation });
+  }
+
+  /** Attack-move: advance toward a point, engaging enemies met en route. */
+  attackMove(ids: string[], x: number, y: number): void {
+    this.room?.send('attack_move', { ids, x, y });
+  }
+
+  /** Place a building at a free position (RTS build-by-sight); a pawn finishes it. */
+  buildAt(type: string, x: number, y: number): void {
+    this.room?.send('build_at', { type, x, y });
   }
 
   placeTower(cityId: string, x: number, y: number): void {

@@ -96,6 +96,7 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workSongOpen, setWorkSongOpen] = useState(false);
+  const [gameMode, setGameMode] = useState<string>('beat');
   const sceneRef = useRef<GameScene | null>(null);
   const lastBoostSent = useRef(-1);
   const prevGold = useRef(20);
@@ -107,9 +108,10 @@ export default function App() {
     state.players?.forEach((p: any) => players.push({
       id: p.id, name: p.name, colorHex: p.colorHex, colorIndex: p.colorIndex, ready: p.ready, isHost: p.isHost,
     }));
-    setLobbyView({ matchCode: state.matchCode, players, mySessionId: sid });
+    setLobbyView({ matchCode: state.matchCode, players, mySessionId: sid, gameMode: state.gameMode || 'beat' });
     setRoomPhase(state.phase);
     setWinnerId(state.winnerId || '');
+    setGameMode(state.gameMode || 'beat');
   }, []);
 
   // Map the server phase onto the app phase.
@@ -322,7 +324,7 @@ export default function App() {
             onSpawn={handleSpawn}
             onSetAutoProduce={handleSetAutoProduce}
           />
-          {selection.type === 'none' && !workSongOpen && (
+          {gameMode !== 'rts' && selection.type === 'none' && !workSongOpen && (
             <button
               style={{ ...SKIN_PANEL, padding: '8px 16px', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
               onClick={() => { playSfx('ui_click', { volume: 0.4 }); setWorkSongOpen(true); }}

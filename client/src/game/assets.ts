@@ -23,7 +23,7 @@ const A2 = 'assets2';
 // Remastered units: one spritesheet per (colour, class, state). Square frames
 // (192px; Lancer 320px). Black skins the PvE enemies.
 export const UNIT_COLORS = [...FACTION_COLORS, 'Black'] as const;
-type UnitState = 'idle' | 'walk' | 'attack' | 'mine' | 'butcher' | 'carrywood' | 'carrymeat' | 'carrygold';
+type UnitState = 'idle' | 'walk' | 'attack' | 'mine' | 'butcher' | 'carrywood' | 'carrymeat' | 'carrygold' | 'build';
 interface ClassDef { fw: number; frames: number; files: Partial<Record<UnitState, [string, number]>>; }
 export const UNIT_CLASSES: Record<string, ClassDef> = {
   warrior: { fw: 192, frames: 8, files: { idle: ['Warrior/Warrior_Idle', 8], walk: ['Warrior/Warrior_Run', 6], attack: ['Warrior/Warrior_Attack1', 4] } },
@@ -35,7 +35,7 @@ export const UNIT_CLASSES: Record<string, ClassDef> = {
   pawn:    { fw: 192, frames: 8, files: {
     idle: ['Pawn/Pawn_Idle', 8], walk: ['Pawn/Pawn_Run', 6],
     attack: ['Pawn/Pawn_Interact Axe', 6], mine: ['Pawn/Pawn_Interact Pickaxe', 6],
-    butcher: ['Pawn/Pawn_Interact Knife', 4],
+    butcher: ['Pawn/Pawn_Interact Knife', 4], build: ['Pawn/Pawn_Interact Hammer', 6],
     carrywood: ['Pawn/Pawn_Run Wood', 6], carrymeat: ['Pawn/Pawn_Run Meat', 6], carrygold: ['Pawn/Pawn_Run Gold', 6],
   } },
 };
@@ -49,8 +49,15 @@ UNIT_COLORS.forEach(c => {
   });
 });
 
+// The monk's heal effect (a glow that plays over the monk while channeling) —
+// one 11-frame sheet per colour, matched to the 11-frame Heal animation.
+const monkHealFx: SheetDef[] = UNIT_COLORS.map(c => ({
+  key: `u_${c}_monk_heal_fx`, url: `${A2}/Units/${c}/Monk/Heal_Effect.png`, frameWidth: 192, frameHeight: 192,
+}));
+
 export const SHEETS: SheetDef[] = [
   ...troopSheets,
+  ...monkHealFx,
   { key: 'tiles', url: `${A}/Terrain/Ground/Tilemap_Flat.png`, frameWidth: 64, frameHeight: 64 },
   // Remastered 9×6 grass/cliff tilesets (shade variants for less repetition)
   { key: 'grass1', url: `${A2}/Tileset/Tilemap_color1.png`, frameWidth: 64, frameHeight: 64 },
@@ -174,7 +181,7 @@ function rowAnim(scene: Phaser.Scene, key: string, sheet: string, row: number, c
 }
 
 const STATE_FR: Record<UnitState, number> = {
-  idle: 8, walk: 12, attack: 12, mine: 12, butcher: 12, carrywood: 12, carrymeat: 12, carrygold: 12,
+  idle: 8, walk: 12, attack: 12, mine: 12, butcher: 12, carrywood: 12, carrymeat: 12, carrygold: 12, build: 12,
 };
 
 export function createAnims(scene: Phaser.Scene): void {
@@ -188,6 +195,14 @@ export function createAnims(scene: Phaser.Scene): void {
           frameRate: STATE_FR[state], repeat: -1,
         });
       });
+    });
+  });
+  // Monk heal effect: one-shot 11-frame glow per colour.
+  UNIT_COLORS.forEach(c => {
+    scene.anims.create({
+      key: `u_${c}_monk_heal_fx`,
+      frames: scene.anims.generateFrameNumbers(`u_${c}_monk_heal_fx`, { start: 0, end: 10 }),
+      frameRate: 14, repeat: 0,
     });
   });
   rowAnim(scene, 'foam_anim', 'foam', 0, 8, 8, 8);

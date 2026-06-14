@@ -11,6 +11,7 @@ import { ObjectiveNode } from './schema/ObjectiveNode';
 import { UnitNode, TROOP_STATS, TROOP_TYPES, RPS_ADVANTAGE } from './schema/UnitNode';
 import { Elevation } from './schema/Elevation';
 import { generateMap, computeLandGrid, generateElevations } from './MapGenerator';
+import { NavGrid } from './NavGrid';
 
 // Matches the four Tiny Swords faction palettes: Blue, Red, Yellow, Purple
 const PLAYER_COLORS = ['#4488ff', '#ff4444', '#ffd700', '#aa44ff'];
@@ -126,6 +127,11 @@ export class GameRoom extends Room<GameState> {
   private spreadCursor = new Map<string, number>();
   // Plateau discs that block building placement and villager movement
   private elevations: { x: number; y: number; r: number }[] = [];
+  // RTS mode: land grid + A* navigation (built once at match start).
+  private land: boolean[][] = [];
+  private nav: NavGrid | null = null;
+  // RTS footpaths: per-tile wear from villager traffic (tileIndex -> wear).
+  private trailWear = new Map<number, number>();
   // Seed chosen by the host, applied when the match actually starts.
   private pendingSeed: number | undefined = undefined;
   private started = false;
@@ -157,7 +163,11 @@ export class GameRoom extends Room<GameState> {
     if (typeof opts.npcAggro === 'number') this.state.npcAggro = Math.max(0.25, Math.min(3, opts.npcAggro));
     if (typeof opts.npcPower === 'number') this.state.npcPower = Math.max(0.25, Math.min(3, opts.npcPower));
     if (typeof opts.aiLevel === 'string' && ['easy', 'normal', 'hard'].includes(opts.aiLevel)) this.state.aiLevel = opts.aiLevel;
+    if (typeof opts.gameMode === 'string' && ['beat', 'rts'].includes(opts.gameMode)) this.state.gameMode = opts.gameMode;
   }
+
+  /** True while this match is the free-movement RTS ("Open Field") mode. */
+  private get isRts(): boolean { return this.state.gameMode === 'rts'; }
 
   // Rival-AI tuning by difficulty: income, whether it plays smart (counters +
   // target selection + defends), cadence, starting stash, and keep-upgrade buffer.
@@ -216,7 +226,9 @@ export class GameRoom extends Room<GameState> {
       city.maxBuildings = 2;
       this.state.cities.set(c.id, city);
     });
-    map.intersections.forEach(n => {
+    // RTS (Open Field) has no pre-built road network — paths emerge from villager
+    // foot traffic — so intersections/roads are skipped (cities + terrain only).
+    if (!this.isRts) map.intersections.forEach(n => {
       this.state.intersections.set(n.id, new IntersectionNode(n.id, n.x, n.y, n.name));
     });
     // NPC aggression scales wave frequency + how soon the first wave comes.
@@ -230,7 +242,7 @@ export class GameRoom extends Room<GameState> {
       this.state.lairs.set(l.id, lair);
     });
     const allNodes = [...map.cities, ...map.intersections, ...map.lairs];
-    map.edges.forEach((e, i) => {
+    if (!this.isRts) map.edges.forEach((e, i) => {
       const aN = allNodes.find(n => n.id === e.a);
       const bN = allNodes.find(n => n.id === e.b);
       if (!aN || !bN) return;
@@ -264,6 +276,9 @@ export class GameRoom extends Room<GameState> {
     const land = computeLandGrid(seed, map.width, map.height, map.cities, map.lairs, map.resources, roadSplines);
     this.elevations = generateElevations(seed, land, map.cities, map.lairs, map.resources, roadSplines);
     this.elevations.forEach(e => this.state.elevations.push(new Elevation(e.x, e.y, e.r)));
+    this.land = land;
+    // RTS mode navigates the open field; build the A* grid once per match.
+    if (this.isRts) this.nav = new NavGrid(land, this.elevations);
   }
 
   /** True if the point sits on (or just inside the margin of) a plateau/cliff. */
@@ -466,6 +481,23 @@ export class GameRoom extends Room<GameState> {
       b.rallyRoadId = msg.roadId;
     });
 
+    // RTS (Open Field): move a unit selection to a point in formation.
+    this.onMessage('move_units', (client, msg: { ids: string[]; x: number; y: number; formation?: string }) => {
+      if (!this.isRts) return;
+      this.issueMoveOrder(client.sessionId, msg.ids, msg.x, msg.y, msg.formation || 'box', 'move');
+    });
+    // RTS: attack-move — advance to a point, engaging enemies met on the way.
+    this.onMessage('attack_move', (client, msg: { ids: string[]; x: number; y: number }) => {
+      if (!this.isRts) return;
+      this.issueMoveOrder(client.sessionId, msg.ids, msg.x, msg.y, 'box', 'attackmove');
+    });
+    // RTS: build-by-sight — place a construction site at a free position.
+    this.onMessage('build_at', (client, msg: { type: string; x: number; y: number }) => {
+      if (!this.isRts) return;
+      const player = this.state.players.get(client.sessionId);
+      if (player) this.tryBuildAt(player, msg.type, msg.x, msg.y);
+    });
+
     // Reactive command: order my whole army on a lane to push / hold / fall back.
     this.onMessage('army_order', (client, msg: { lane: string; command: string }) => {
       const player = this.state.players.get(client.sessionId);
@@ -565,18 +597,31 @@ export class GameRoom extends Room<GameState> {
     const stats = TROOP_STATS[type];
     if (!stats || !TROOP_TYPES.includes(type as any)) return false;
     if (!PRODUCES[building.type]?.includes(type)) return false;     // this building can't train it
+    if (building.constructing) return false;                        // not finished building yet
     if (this.state.tick < building.produceReadyTick) return false;  // still cooling down
     const city = this.state.cities.get(building.cityId);
     if (!city || city.ownerId !== player.id) return false;
     if (player.food < stats.foodCost || player.gold < stats.goldCost) return false;
     if (player.populationUsed + 1 > player.populationCap) return false;
-    const exits = [...this.state.roads.values()].filter(r => r.fromId === city.id);
-    const targetRoad = exits.find(r => r.id === (building.rallyRoadId || city.rallyRoadId)) || exits[0];
-    if (!targetRoad) return false;
-    if (!this.isSlotFree(targetRoad.id, 0)) return false; // exit tile occupied
+
+    let unit: UnitNode;
+    if (this.isRts) {
+      // Free-movement spawn: pop out next to the producing building and idle
+      // until the player gives a move/attack order (no roads in Open Field).
+      const ang = Math.random() * Math.PI * 2, rad = 36 + Math.random() * 18;
+      unit = new UnitNode(nextId('unit'), player.id, type, '');
+      unit.x = building.x + Math.cos(ang) * rad;
+      unit.y = building.y + Math.sin(ang) * rad + 28; // bias below the building
+      unit.status = 'marching';
+    } else {
+      const exits = [...this.state.roads.values()].filter(r => r.fromId === city.id);
+      const targetRoad = exits.find(r => r.id === (building.rallyRoadId || city.rallyRoadId)) || exits[0];
+      if (!targetRoad) return false;
+      if (!this.isSlotFree(targetRoad.id, 0)) return false; // exit tile occupied
+      unit = new UnitNode(nextId('unit'), player.id, type, targetRoad.id);
+    }
     player.food -= stats.foodCost; player.gold -= stats.goldCost;
     player.populationUsed += 1;
-    const unit = new UnitNode(nextId('unit'), player.id, type, targetRoad.id);
     unit.originNodeId = city.id;
     if (player.hasTech('hp_all')) {
       unit.maxHealth = Math.floor(unit.maxHealth * 1.2);
@@ -633,8 +678,17 @@ export class GameRoom extends Room<GameState> {
     this.processLairs();
     this.processAutoProduce();
     this.processVillagers();
-    this.moveUnits();
-    this.processCombat();
+    if (this.isRts) {
+      // RTS: free 2D movement + real-time combat (no beat gate, no road locking).
+      if (this.state.tick % AI_INTERVAL_TICKS === 0) this.rtsBotCommand();
+      this.rtsMoveUnits();
+      this.rtsCombat();
+      this.processBuildSites();
+      this.processTrails();
+    } else {
+      this.moveUnits();
+      this.processCombat();
+    }
     this.processSieges();
     this.processObjectives();
     this.processDefenseArchers();
@@ -642,6 +696,371 @@ export class GameRoom extends Room<GameState> {
     if (this.state.tick % SHEEP_REGEN_INTERVAL_TICKS === 0) this.processSheepRegen();
     if (this.state.tick % TREE_GROW_INTERVAL_TICKS === 0) this.processTreeGrowth();
     this.cleanupIdleGarrisons();
+  }
+
+  // ─── RTS (Open Field) systems ───
+
+  // Build-by-sight: validate placement (visible, clear of enemies, on land,
+  // not overlapping) then drop a construction site + dispatch a pawn to raise it.
+  private tryBuildAt(player: Player, type: string, x: number, y: number): boolean {
+    if (!this.nav || !BUILDING_TYPES.includes(type as BuildingType)) return false;
+    const t = this.nav.worldToTile(x, y);
+    if (this.nav.isBlocked(t.c, t.r)) return false;                 // water / cliff
+    const cx = this.nav.tileCenter(t.c, t.r).x, cy = this.nav.tileCenter(t.c, t.r).y;
+    for (const b of this.state.buildings.values()) if (Math.hypot(b.x - cx, b.y - cy) < 64) return false; // overlap
+    if (!this.rtsCanSee(player.id, cx, cy)) return false;           // must be in sight
+    if (this.rtsEnemyNear(player.id, cx, cy, 260)) return false;    // no enemy close
+    const cost = BUILDING_COSTS[type as BuildingType];
+    if (player.wood < cost.wood || player.food < cost.food || player.gold < cost.gold) return false;
+    let home: CityNode | undefined, hd = Infinity;
+    this.state.cities.forEach(c => { if (c.ownerId !== player.id) return; const d = Math.hypot(c.x - cx, c.y - cy); if (d < hd) { hd = d; home = c; } });
+    if (!home) return false;
+    player.wood -= cost.wood; player.food -= cost.food; player.gold -= cost.gold;
+    const bId = nextId('bld');
+    const b = new BuildingNode(bId, home.id, type as BuildingType, cx, cy);
+    b.constructing = true; b.buildProgress = 0; b.health = 1; b.maxHealth = 200;
+    this.state.buildings.set(bId, b);
+    this.assignBuilder(player.id, b);
+    return true;
+  }
+
+  /** True if (x,y) is within sight of any of the player's units/buildings/cities. */
+  private rtsCanSee(ownerId: string, x: number, y: number): boolean {
+    const R = 560;
+    for (const c of this.state.cities.values()) if (c.ownerId === ownerId && Math.hypot(c.x - x, c.y - y) < R) return true;
+    for (const u of this.state.units.values()) if (u.ownerId === ownerId && Math.hypot(u.x - x, u.y - y) < R) return true;
+    for (const b of this.state.buildings.values()) {
+      const c = this.state.cities.get(b.cityId);
+      if (c && c.ownerId === ownerId && Math.hypot(b.x - x, b.y - y) < R) return true;
+    }
+    return false;
+  }
+
+  /** True if an enemy unit/city sits within `r` of (x,y). */
+  private rtsEnemyNear(ownerId: string, x: number, y: number, r: number): boolean {
+    for (const u of this.state.units.values()) if (u.ownerId !== ownerId && u.type !== 'villager' && u.health > 0 && Math.hypot(u.x - x, u.y - y) < r) return true;
+    for (const c of this.state.cities.values()) if (c.ownerId && c.ownerId !== ownerId && Math.hypot(c.x - x, c.y - y) < r) return true;
+    return false;
+  }
+
+  /** Dispatch the nearest free pawn to channel a construction site. */
+  private assignBuilder(ownerId: string, b: BuildingNode): void {
+    let best: UnitNode | undefined, bd = Infinity;
+    this.state.units.forEach(u => {
+      if (u.ownerId !== ownerId || u.type !== 'villager' || u.health <= 0 || u.status === 'building') return;
+      const d = Math.hypot(u.x - b.x, u.y - b.y);
+      if (d < bd) { bd = d; best = u; }
+    });
+    if (best) { best.status = 'building'; best.buildTargetId = b.id; best.carrying = 0; best.targetResourceId = ''; b.builderId = best.id; }
+  }
+
+  // Construction sites advance while their assigned pawn channels beside them.
+  private processBuildSites(): void {
+    const BUILD_TIME = 80; // ~8s of channeling to finish
+    this.state.buildings.forEach(b => {
+      if (!b.constructing) return;
+      let builder = b.builderId ? this.state.units.get(b.builderId) : undefined;
+      if (!builder || builder.health <= 0 || builder.status !== 'building') {
+        const city = this.state.cities.get(b.cityId);
+        if (city) this.assignBuilder(city.ownerId, b); // builder lost — reassign
+        return;
+      }
+      if (Math.hypot(builder.x - b.x, builder.y - b.y) <= 44) {
+        b.buildProgress = Math.min(1, b.buildProgress + 1 / BUILD_TIME);
+        b.health = Math.max(1, Math.round(b.maxHealth * b.buildProgress));
+        if (b.buildProgress >= 1) {
+          b.constructing = false; b.health = b.maxHealth; b.builderId = '';
+          builder.status = 'marching'; builder.buildTargetId = '';
+        }
+      }
+    });
+  }
+
+  // Footpaths emerge from villager traffic (Settlers-style): each tick a villager
+  // wears its tile a little; wear decays so abandoned routes fade. Tiles past a
+  // visible threshold sync to the client (drawn as paths) and grant a speed bonus.
+  private processTrails(): void {
+    if (!this.nav) return;
+    const cols = this.nav.cols;
+    this.state.units.forEach(u => {
+      if (u.type !== 'villager' || u.health <= 0) return;
+      const t = this.nav!.worldToTile(u.x, u.y);
+      if (this.nav!.isBlocked(t.c, t.r)) return;
+      const idx = t.r * cols + t.c;
+      this.trailWear.set(idx, Math.min(GameRoom.TRAIL_MAX, (this.trailWear.get(idx) || 0) + GameRoom.TRAIL_GAIN));
+    });
+    if (this.state.tick % 5 !== 0) return; // decay + sync at 2 Hz to limit churn
+    const drop: number[] = [];
+    this.trailWear.forEach((w, idx) => {
+      const nw = w - GameRoom.TRAIL_DECAY;
+      if (nw <= 0) { drop.push(idx); return; }
+      this.trailWear.set(idx, nw);
+      const key = String(idx);
+      const visible = nw >= GameRoom.TRAIL_VISIBLE;
+      if (visible && !this.state.trails.has(key)) this.state.trails.set(key, 1);
+      else if (!visible && this.state.trails.has(key)) this.state.trails.delete(key);
+    });
+    drop.forEach(idx => { this.trailWear.delete(idx); this.state.trails.delete(String(idx)); });
+  }
+
+  private static TRAIL_GAIN = 1.2;
+  private static TRAIL_DECAY = 0.25; // per 5-tick sync pass (~0.5/s)
+  private static TRAIL_VISIBLE = 6;  // wear at which a path shows + speeds units
+  private static TRAIL_MAX = 30;
+  private static TRAIL_SPEED_MULT = 1.25;
+
+  // Real-time attack cadence (ticks between strikes) + reach (px) per type.
+  // Knights hit hard but slowly; lancers/archers faster; archers reach far.
+  private static RTS_ATTACK_INTERVAL: Record<string, number> = { knight: 16, lancer: 9, archer: 11, monk: 9999, goblin: 11, spider: 10 };
+  private static RTS_RANGE_PX: Record<string, number> = { knight: 66, lancer: 76, archer: 340, monk: 66, goblin: 60, spider: 66 };
+  private static RTS_AGGRO_PX = 430; // how far a unit notices an enemy to engage
+
+  private rtsCombat(): void {
+    const dead: string[] = [];
+    this.state.units.forEach(u => {
+      if (u.type === 'villager' || u.health <= 0) return;
+      // Monks never fight (they heal — see processMonkHealing); follow orders.
+      if (u.type === 'monk') { u.engaged = false; return; }
+      // A pure 'move' order ignores enemies (a-move/idle units defend & engage).
+      if (u.orderKind === 'move') { u.engaged = false; return; }
+
+      const range = GameRoom.RTS_RANGE_PX[u.type] ?? 66;
+      const enemy = this.rtsNearestEnemyUnit(u, GameRoom.RTS_AGGRO_PX);
+      let tx = 0, ty = 0, reach = range, onUnit: UnitNode | null = null, onCity: CityNode | null = null, onLair: LairNode | null = null;
+
+      if (enemy) {
+        onUnit = enemy; tx = enemy.x; ty = enemy.y;
+      } else if (u.orderKind === 'attackmove' || u.isPvE) {
+        // No enemy unit nearby: seek a city/lair to siege.
+        const siege = this.rtsSiegeTarget(u);
+        if (siege.city) { onCity = siege.city; tx = siege.city.x; ty = siege.city.y; reach = range + 80; }
+        else if (siege.lair) { onLair = siege.lair; tx = siege.lair.x; ty = siege.lair.y; reach = range + 50; }
+      }
+
+      if (!onUnit && !onCity && !onLair) {
+        if (u.status === 'fighting') u.status = 'marching';
+        u.engaged = false;
+        return;
+      }
+
+      u.engaged = true;
+      const dist = Math.hypot(tx - u.x, ty - u.y);
+      if (dist > reach) {
+        // Chase: steer straight toward the target (aggro range is short).
+        u.status = 'marching';
+        this.stepToward(u, tx, ty, this.rtsSpeed(u.type) * this.trailSpeedBonus(u.x, u.y));
+        return;
+      }
+
+      // In range: hold and strike on cadence.
+      u.status = 'fighting';
+      const interval = GameRoom.RTS_ATTACK_INTERVAL[u.type] ?? 12;
+      if (this.state.tick - u.lastCombatTick < interval) return;
+      u.lastCombatTick = this.state.tick;
+      if (onUnit) {
+        onUnit.health = Math.max(0, onUnit.health - this.calcDamage(u, onUnit));
+        if (onUnit.health <= 0) { this.awardKillGold(u, onUnit); dead.push(onUnit.id); }
+      } else if (onCity) {
+        const dmg = Math.max(1, Math.floor(TROOP_STATS[u.type]?.attack ?? 5));
+        onCity.health = Math.max(0, onCity.health - dmg);
+        if (onCity.health <= 0) this.conquerCity(onCity, u.isPvE ? 'pve' : u.ownerId);
+      } else if (onLair) {
+        const dmg = Math.max(1, Math.floor((TROOP_STATS[u.type]?.attack ?? 5) * 0.5));
+        onLair.health = Math.max(0, onLair.health - dmg);
+        if (onLair.health <= 0) {
+          const bounty = onLair.type === 'spider' ? SPIDER_BOUNTY : GOBLIN_BOUNTY;
+          const killer = this.state.players.get(u.ownerId);
+          if (killer) { killer.wood += bounty.wood; killer.food += bounty.food; killer.gold += bounty.gold; }
+          onLair.respawnAtTick = this.state.tick + LAIR_RESPAWN_TICKS;
+        }
+      }
+    });
+    dead.forEach(id => {
+      const u = this.state.units.get(id);
+      if (u && !u.isPvE) this.refundPop(u.ownerId);
+      this.state.units.delete(id);
+    });
+  }
+
+  // Minimal RTS bot behaviour: once a bot has a small warband of idle troops,
+  // send them on an attack-move to the nearest enemy/neutral city. (Recruiting
+  // and economy are still handled by the shared processAI.)
+  private rtsBotCommand(): void {
+    this.state.players.forEach(p => {
+      if (!p.isBot) return;
+      const idle: UnitNode[] = [];
+      this.state.units.forEach(u => {
+        if (u.ownerId !== p.id || u.type === 'villager' || u.health <= 0) return;
+        if (u.engaged || u.orderKind === 'attackmove' || u.tx >= 0) return; // already busy/moving
+        idle.push(u);
+      });
+      if (idle.length < 4) return; // muster a warband before attacking
+      let cx = 0, cy = 0; idle.forEach(u => { cx += u.x; cy += u.y; }); cx /= idle.length; cy /= idle.length;
+      let best: CityNode | undefined, bestD = Infinity;
+      this.state.cities.forEach(c => {
+        if (c.ownerId === p.id) return;
+        const d = Math.hypot(c.x - cx, c.y - cy);
+        if (d < bestD) { bestD = d; best = c; }
+      });
+      if (best) this.issueMoveOrder(p.id, idle.map(u => u.id), best.x, best.y, 'box', 'attackmove');
+    });
+  }
+
+  /** Nearest living enemy (different owner) non-villager unit within `radius`. */
+  private rtsNearestEnemyUnit(u: UnitNode, radius: number): UnitNode | null {
+    let best: UnitNode | null = null, bestD = radius;
+    this.state.units.forEach(o => {
+      if (o.ownerId === u.ownerId || o.type === 'villager' || o.health <= 0) return;
+      const d = Math.hypot(o.x - u.x, o.y - u.y);
+      if (d < bestD) { bestD = d; best = o; }
+    });
+    return best;
+  }
+
+  /** A siege target for an attack-moving/PvE unit: an enemy/neutral city (PvE
+   *  hunts its assigned city across the map; players siege what's near), else a
+   *  living lair nearby. */
+  private rtsSiegeTarget(u: UnitNode): { city?: CityNode; lair?: LairNode } {
+    if (u.isPvE) {
+      const target = u.targetNodeId && this.state.cities.get(u.targetNodeId);
+      if (target && target.health > 0) return { city: target };
+      // fall back to nearest player-held city
+      let best: CityNode | undefined, bestD = Infinity;
+      this.state.cities.forEach(c => {
+        if (!c.ownerId || c.ownerId === 'pve') return;
+        const d = Math.hypot(c.x - u.x, c.y - u.y);
+        if (d < bestD) { bestD = d; best = c; }
+      });
+      return { city: best };
+    }
+    // Player attack-move: siege the nearest enemy/neutral city within aggro.
+    let bestCity: CityNode | undefined, bestCityD = GameRoom.RTS_AGGRO_PX + 160;
+    this.state.cities.forEach(c => {
+      if (c.ownerId === u.ownerId) return;
+      const d = Math.hypot(c.x - u.x, c.y - u.y);
+      if (d < bestCityD) { bestCityD = d; bestCity = c; }
+    });
+    if (bestCity) return { city: bestCity };
+    let bestLair: LairNode | undefined, bestLairD = GameRoom.RTS_AGGRO_PX;
+    this.state.lairs.forEach(l => {
+      if (l.health <= 0) return;
+      const d = Math.hypot(l.x - u.x, l.y - u.y);
+      if (d < bestLairD) { bestLairD = d; bestLair = l; }
+    });
+    return { lair: bestLair };
+  }
+
+  // Free-movement speed (px/tick) per unit type. Knights are a touch heavier.
+  private rtsSpeed(type: string): number {
+    switch (type) {
+      case 'knight': return 3.4;
+      case 'lancer': return 4.6;
+      case 'archer': return 4.0;
+      case 'monk': return 3.6;
+      case 'goblin': return 4.2;
+      case 'spider': return 4.0;
+      default: return 4.0;
+    }
+  }
+
+  // Advance every non-villager unit toward its destination (cached A* waypoints),
+  // then gently separate overlapping units so they don't stack into one blob.
+  private rtsMoveUnits(): void {
+    if (!this.nav) return;
+    const movers: UnitNode[] = [];
+    this.state.units.forEach(u => {
+      if (u.type === 'villager' || u.health <= 0) return;
+      // Engaged units are steered by combat (chase/hold); others follow commands.
+      if (!u.engaged && u.tx >= 0) this.rtsStepAlongPath(u);
+      movers.push(u);
+    });
+    this.rtsSeparate(movers);
+  }
+
+  private rtsStepAlongPath(u: UnitNode): void {
+    const speed = this.rtsSpeed(u.type) * this.trailSpeedBonus(u.x, u.y);
+    if (u.navStep < u.navPath.length) {
+      const wp = u.navPath[u.navStep];
+      this.stepToward(u, wp.x, wp.y, speed);
+      if (Math.hypot(wp.x - u.x, wp.y - u.y) < 20) u.navStep++;
+      return;
+    }
+    // Final approach straight to the exact target (slides around plateaus).
+    this.stepToward(u, u.tx, u.ty, speed);
+    if (Math.hypot(u.tx - u.x, u.ty - u.y) < 12) {
+      u.tx = -1; u.ty = -1; u.navPath = []; u.navStep = 0;
+      u.orderKind = ''; // arrived — idle (combat may re-acquire)
+    }
+  }
+
+  // Boids-lite: push apart units closer than a min spacing, never onto a blocked
+  // tile (water/cliff). O(n²) over combat units — unit counts stay modest.
+  private rtsSeparate(units: UnitNode[]): void {
+    const MIN = 26;
+    for (let i = 0; i < units.length; i++) {
+      for (let j = i + 1; j < units.length; j++) {
+        const a = units[i], b = units[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let d = Math.hypot(dx, dy);
+        if (d === 0) { dx = 1; dy = 0; d = 1; }
+        if (d >= MIN) continue;
+        const push = (MIN - d) / 2, ux = dx / d, uy = dy / d;
+        this.rtsNudge(a, -ux * push, -uy * push);
+        this.rtsNudge(b, ux * push, uy * push);
+      }
+    }
+  }
+
+  private rtsNudge(u: UnitNode, dx: number, dy: number): void {
+    if (!this.nav) { u.x += dx; u.y += dy; return; }
+    const t = this.nav.worldToTile(u.x + dx, u.y + dy);
+    if (!this.nav.isBlocked(t.c, t.r)) { u.x += dx; u.y += dy; }
+  }
+
+  // Speed multiplier when standing on a worn footpath.
+  private trailSpeedBonus(x: number, y: number): number {
+    if (!this.nav) return 1;
+    const t = this.nav.worldToTile(x, y);
+    return this.state.trails.has(String(t.r * this.nav.cols + t.c)) ? GameRoom.TRAIL_SPEED_MULT : 1;
+  }
+
+  // Formation slots (relative to the destination) for a group move order.
+  private formationOffsets(n: number, formation: string): { dx: number; dy: number }[] {
+    const S = 40, out: { dx: number; dy: number }[] = [];
+    if (formation === 'line') {
+      for (let i = 0; i < n; i++) out.push({ dx: (i - (n - 1) / 2) * S, dy: 0 });
+    } else {
+      const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+      const rows = Math.ceil(n / cols);
+      for (let i = 0; i < n; i++) {
+        const c = i % cols, r = Math.floor(i / cols);
+        out.push({ dx: (c - (cols - 1) / 2) * S, dy: (r - (rows - 1) / 2) * S });
+      }
+    }
+    return out;
+  }
+
+  // Issue a move/attack-move order: assign formation slots + A* a path to each.
+  private issueMoveOrder(ownerId: string, ids: string[], x: number, y: number, formation: string, kind: string): void {
+    if (!this.nav) return;
+    const units = (ids || [])
+      .map(id => this.state.units.get(id))
+      .filter((u): u is UnitNode => !!u && u.ownerId === ownerId && u.type !== 'villager' && u.health > 0);
+    if (units.length === 0) return;
+    const offsets = this.formationOffsets(units.length, formation);
+    units.forEach((u, i) => this.rtsSetDestination(u, x + offsets[i].dx, y + offsets[i].dy, kind));
+  }
+
+  private rtsSetDestination(u: UnitNode, x: number, y: number, kind: string): void {
+    if (!this.nav) return;
+    x = Math.max(16, Math.min(this.state.mapWidth - 16, x));
+    y = Math.max(16, Math.min(this.state.mapHeight - 16, y));
+    u.tx = x; u.ty = y; u.orderKind = kind; u.repathTick = this.state.tick;
+    const s = this.nav.worldToTile(u.x, u.y);
+    const g = this.nav.worldToTile(x, y);
+    const path = this.nav.findPath(s.c, s.r, g.c, g.r);
+    u.navPath = path ? path.map(t => this.nav!.tileCenter(t.c, t.r)) : [];
+    u.navStep = 0;
   }
 
   // ─── Economy ────────────────────────────────────────────────
@@ -843,7 +1262,7 @@ export class GameRoom extends Room<GameState> {
       }
       if (this.state.tick - lair.lastSpawnTick < lair.spawnIntervalTicks) return;
       lair.lastSpawnTick = this.state.tick;
-      if (!lair.roadId) return;
+      if (!this.isRts && !lair.roadId) return;
 
       // Don't flood the map: each lair keeps a small standing warband
       let alive = 0;
@@ -856,6 +1275,21 @@ export class GameRoom extends Room<GameState> {
       if (!targetCityId) return;
 
       const count = 2 + Math.floor(Math.random() * 2);
+      const power = this.state.npcPower || 1;
+      if (this.isRts) {
+        // Free-movement spawn: pop out around the lair, hunt the target city.
+        for (let i = 0; i < count; i++) {
+          const ang = Math.random() * Math.PI * 2, rad = 30 + Math.random() * 24;
+          const unit = new UnitNode(nextId('pve'), 'pve', lair.type, '');
+          unit.x = lair.x + Math.cos(ang) * rad;
+          unit.y = lair.y + Math.sin(ang) * rad;
+          unit.originNodeId = lair.id;
+          unit.targetNodeId = targetCityId;
+          if (power !== 1) { unit.maxHealth = Math.round(unit.maxHealth * power); unit.health = unit.maxHealth; }
+          this.state.units.set(unit.id, unit);
+        }
+        return;
+      }
       const slots = this.slotsOf(lair.roadId);
       for (let i = 0; i < count; i++) {
         if (!this.isSlotFree(lair.roadId, i)) continue; // tile taken
@@ -863,7 +1297,6 @@ export class GameRoom extends Room<GameState> {
         unit.originNodeId = lair.id;
         unit.targetNodeId = targetCityId;
         unit.t = i / slots; // one per tile, marching out in file
-        const power = this.state.npcPower || 1;
         if (power !== 1) { unit.maxHealth = Math.round(unit.maxHealth * power); unit.health = unit.maxHealth; }
         this.state.units.set(unit.id, unit);
       }
@@ -897,6 +1330,14 @@ export class GameRoom extends Room<GameState> {
       // Work-song minigame boost (1.0 … 1.2) speeds movement and gathering alike.
       const boost = player.villagerBoost || 1;
       vSpeed *= boost;
+
+      // RTS: a pawn dispatched to a construction site walks there and channels
+      // it (processBuildSites credits progress while it stands adjacent).
+      if (this.isRts && unit.status === 'building' && unit.buildTargetId) {
+        const site = this.state.buildings.get(unit.buildTargetId);
+        if (!site || !site.constructing) { unit.status = 'marching'; unit.buildTargetId = ''; }
+        else { if (Math.hypot(site.x - unit.x, site.y - unit.y) > 40) this.stepToward(unit, site.x, site.y + 22, vSpeed); return; }
+      }
 
       // Full backpack (or nothing left to gather) → haul it home and bank it.
       if (unit.carrying >= VILLAGER_CARRY_CAP || (unit.carrying > 0 && !this.hasGatherTarget(unit, home))) {
@@ -1779,15 +2220,20 @@ export class GameRoom extends Room<GameState> {
     if (monks.length === 0) return;
 
     monks.forEach(monk => {
+      let healedAny = false;
       this.state.units.forEach(other => {
         if (other.id === monk.id || other.ownerId !== monk.ownerId) return;
         if (other.health >= other.maxHealth) return;
-        const near = monk.atNodeId
-          ? other.atNodeId === monk.atNodeId
-          : this.pairKey(other.roadId) === this.pairKey(monk.roadId)
-            && Math.abs(this.pairPos(other) - this.pairPos(monk)) <= 0.06;
-        if (near) other.health = Math.min(other.maxHealth, other.health + 5);
+        const near = this.isRts
+          ? Math.hypot(other.x - monk.x, other.y - monk.y) <= 90 // free-position proximity
+          : monk.atNodeId
+            ? other.atNodeId === monk.atNodeId
+            : this.pairKey(other.roadId) === this.pairKey(monk.roadId)
+              && Math.abs(this.pairPos(other) - this.pairPos(monk)) <= 0.06;
+        if (near) { other.health = Math.min(other.maxHealth, other.health + 5); healedAny = true; }
       });
+      // Stamp the heal tick so the client can play the channel anim + effect.
+      if (healedAny) monk.healingTick = this.state.tick;
     });
   }
 

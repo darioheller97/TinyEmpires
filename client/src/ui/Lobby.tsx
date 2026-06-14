@@ -8,6 +8,7 @@ export interface LobbyView {
   matchCode: string;
   players: LobbyPlayer[];
   mySessionId: string | null;
+  gameMode?: string; // beat | rts
 }
 
 interface Props {
@@ -47,6 +48,9 @@ export default function Lobby({ lobby, onSelectColor, onToggleReady, onStart, on
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center', alignItems: 'center', marginBottom: 14 }}>
           <span style={{ fontSize: 34, fontWeight: 800, letterSpacing: 6, color: '#4a3417' }}>{lobby.matchCode}</span>
           <button style={{ ...BUTTON, fontSize: 12 }} onClick={() => navigator.clipboard?.writeText(lobby.matchCode)}>Copy</button>
+        </div>
+        <div style={{ marginBottom: 12, fontSize: 12, color: '#4a3417', fontWeight: 700 }}>
+          Mode: <span style={{ color: '#6b4f2e' }}>{lobby.gameMode === 'rts' ? 'Open Field (RTS)' : 'Beat'}</span>
         </div>
 
         {/* Player list */}

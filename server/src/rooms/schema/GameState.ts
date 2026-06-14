@@ -68,4 +68,12 @@ export class GameState extends Schema {
   @type('number') npcAggro: number = 1;         // wave frequency / first-wave scaling
   @type('number') npcPower: number = 1;         // enemy HP/damage multiplier
   @type('string') aiLevel: string = 'normal';   // easy | normal | hard (rival AI skill)
+
+  // Game mode: 'beat' = original rhythm/road-locked lane pusher;
+  // 'rts' = real-time free-movement "Open Field" mode (units roam, build by sight).
+  @type('string') gameMode: string = 'beat';     // beat | rts
+
+  // Worn footpaths (RTS mode): tile index (r*cols+c) -> wear value above the
+  // visible-path threshold. Carved by villager/pawn traffic; decays over time.
+  @type({ map: 'number' }) trails = new MapSchema<number>();
 }

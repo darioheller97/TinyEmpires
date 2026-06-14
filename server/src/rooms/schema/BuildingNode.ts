@@ -73,6 +73,12 @@ export class BuildingNode extends Schema {
   @type('number')
   produceReadyTick: number = 0;
 
+  // RTS build-by-sight: while constructing, a pawn channels buildProgress 0→1
+  // before the building is usable (production/economy gated until done).
+  @type('boolean') constructing: boolean = false;
+  @type('number') buildProgress: number = 0;
+  builderId: string = '';
+
   lastAutoProduceTick: number = 0;
 
   constructor(id: string, cityId: string, type: BuildingType, x: number, y: number) {

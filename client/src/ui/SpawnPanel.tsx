@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { PANEL, RIBBON, BUTTON, BUTTON_DISABLED, BUTTON_RED, ICONS, RES_ICON } from './skin';
 
 export interface SpawnOption {
@@ -96,14 +96,20 @@ export default function SpawnPanel({ visible, producer, resources, autoProduceTy
   if (options.length === 0) return null;
   const cooling = cooldownReadyIn > 0;
 
+  // Track the peak cooldown so the bar fills as the timer counts down (we only
+  // get seconds-remaining from the server; this remembers what "full" was).
+  const peakRef = useRef(0);
+  if (cooldownReadyIn <= 0) peakRef.current = 0;
+  else if (cooldownReadyIn > peakRef.current) peakRef.current = cooldownReadyIn;
+  const total = peakRef.current || cooldownReadyIn || 1;
+  const progress = cooling ? Math.min(1, Math.max(0, 1 - cooldownReadyIn / total)) : 1;
+
   return (
     <div style={WRAP}>
       <div style={{ ...RIBBON, fontSize: '13px' }}>{PRODUCER_NAMES[producer] || 'Train'}</div>
       <div style={{ fontSize: '10px', opacity: 0.85, marginBottom: '4px' }}>
         Pop {resources.popUsed}/{resources.popCap}
-        {cooling
-          ? <span style={{ color: '#b5302a', fontWeight: 700 }}> · recruiting… {cooldownReadyIn}s</span>
-          : <span> · toggle = auto-train</span>}
+        <span> · toggle = auto-train</span>
       </div>
       {options.map((opt) => {
         const enabled = !cooling && resources.food >= opt.foodCost && resources.gold >= opt.goldCost
@@ -115,13 +121,37 @@ export default function SpawnPanel({ visible, producer, resources, autoProduceTy
         return (
           <div key={opt.type} style={{ marginBottom: '4px' }}>
             <div style={ROW}>
-              <button style={enabled ? SPAWN_BTN : SPAWN_BTN_OFF} disabled={!enabled} title={tip} onClick={() => onSpawn(opt.type)}>
-                <span>{opt.name}</span>
-                <span style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
-                  <span><img src={ICONS.food} style={SMALL_ICON} alt="f" />{opt.foodCost}</span>
-                  {opt.goldCost > 0 && <span><img src={ICONS.gold} style={SMALL_ICON} alt="g" />{opt.goldCost}</span>}
-                </span>
-              </button>
+              <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
+                <button
+                  style={{ ...(enabled ? SPAWN_BTN : SPAWN_BTN_OFF), ...(cooling ? { filter: 'grayscale(1)', opacity: 0.6 } : null) }}
+                  disabled={!enabled}
+                  title={tip}
+                  onClick={() => onSpawn(opt.type)}
+                >
+                  <span>{opt.name}</span>
+                  <span style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                    <span><img src={ICONS.food} style={SMALL_ICON} alt="f" />{opt.foodCost}</span>
+                    {opt.goldCost > 0 && <span><img src={ICONS.gold} style={SMALL_ICON} alt="g" />{opt.goldCost}</span>}
+                  </span>
+                </button>
+                {cooling && (
+                  <>
+                    <div style={{
+                      position: 'absolute', left: 0, top: 0, bottom: 0,
+                      width: `${progress * 100}%`,
+                      background: 'rgba(90,160,70,0.4)',
+                      borderRadius: '4px', pointerEvents: 'none',
+                      transition: 'width 0.25s linear',
+                    }} />
+                    <div style={{
+                      position: 'absolute', inset: 0, display: 'flex',
+                      alignItems: 'center', justifyContent: 'center',
+                      pointerEvents: 'none', fontWeight: 700, fontSize: '12px',
+                      color: '#2a1d10', textShadow: '0 1px 0 rgba(255,255,255,0.4)',
+                    }}>{cooldownReadyIn}s</div>
+                  </>
+                )}
+              </div>
               <button
                 style={{ ...(autoOn ? BUTTON_RED : BUTTON), width: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px' }}
                 title={autoOn ? 'Auto-train on — click to cancel' : 'Auto-train this unit'}
