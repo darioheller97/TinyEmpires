@@ -66,7 +66,7 @@ export default function TechTreeModal({ visible, researched, gold, techs, onRese
         {categories.map(cat => (
           <div key={cat}>
             <div style={{ fontSize: '16px', margin: '10px 0 6px' }}>
-              {cat === 'unit' ? '⚔️ Unit Upgrades' : '🏗️ Economy'}
+              {cat === 'unit' ? 'Unit Upgrades' : 'Economy'}
             </div>
             {techs.filter(t => t.category === cat).map(tech => {
               const isResearched = researched.includes(tech.id);

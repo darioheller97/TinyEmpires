@@ -44,7 +44,7 @@ export default function ResourceBar({ resources }: Props) {
         <span>{Math.floor(resources.gold)}</span>
       </div>
       <div style={ITEM_STYLE}>
-        <span>👥</span>
+        <span style={{ fontSize: 11, opacity: 0.8, fontWeight: 700 }}>POP</span>
         <span>{resources.popUsed}/{resources.popCap}</span>
       </div>
     </div>

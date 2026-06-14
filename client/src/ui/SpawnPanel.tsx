@@ -13,6 +13,7 @@ interface Props {
   producer: string; // building type: barracks | archery | church
   resources: { food: number; gold: number; popUsed: number; popCap: number };
   autoProduceType: string;
+  cooldownReadyIn: number; // seconds until this building can train again (0 = ready)
   onSpawn: (type: string) => void;
   onSetAutoProduce: (troopType: string) => void;
 }
@@ -88,20 +89,24 @@ const SPAWN_OPTIONS: SpawnOption[] = [
   { type: 'monk', name: 'Monk', foodCost: 25, goldCost: 10 },
 ];
 
-export default function SpawnPanel({ visible, producer, resources, autoProduceType, onSpawn, onSetAutoProduce }: Props) {
+export default function SpawnPanel({ visible, producer, resources, autoProduceType, cooldownReadyIn, onSpawn, onSetAutoProduce }: Props) {
   if (!visible) return null;
   const allowed = PRODUCES[producer] || [];
   const options = SPAWN_OPTIONS.filter(o => allowed.includes(o.type));
   if (options.length === 0) return null;
+  const cooling = cooldownReadyIn > 0;
 
   return (
     <div style={WRAP}>
       <div style={{ ...RIBBON, fontSize: '13px' }}>{PRODUCER_NAMES[producer] || 'Train'}</div>
-      <div style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px' }}>
-        Pop {resources.popUsed}/{resources.popCap} · ⟳ auto-trains every 6s
+      <div style={{ fontSize: '10px', opacity: 0.85, marginBottom: '4px' }}>
+        Pop {resources.popUsed}/{resources.popCap}
+        {cooling
+          ? <span style={{ color: '#b5302a', fontWeight: 700 }}> · recruiting… {cooldownReadyIn}s</span>
+          : <span> · toggle = auto-train</span>}
       </div>
       {options.map((opt) => {
-        const enabled = resources.food >= opt.foodCost && resources.gold >= opt.goldCost
+        const enabled = !cooling && resources.food >= opt.foodCost && resources.gold >= opt.goldCost
           && resources.popUsed < resources.popCap;
         const autoOn = autoProduceType === opt.type;
         const c = COUNTER[opt.type];
@@ -118,11 +123,13 @@ export default function SpawnPanel({ visible, producer, resources, autoProduceTy
                 </span>
               </button>
               <button
-                style={{ ...(autoOn ? BUTTON_RED : BUTTON), width: '46px', fontSize: '11px' }}
-                title={autoOn ? 'Auto-produce on — click to stop' : 'Auto-produce this unit'}
+                style={{ ...(autoOn ? BUTTON_RED : BUTTON), width: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px' }}
+                title={autoOn ? 'Auto-train on — click to cancel' : 'Auto-train this unit'}
                 onClick={() => onSetAutoProduce(autoOn ? '' : opt.type)}
               >
-                {autoOn ? '⟳on' : '⟳'}
+                {autoOn
+                  ? <img src="/assets/UI/Icons/Regular_01.png" alt="cancel" width={18} height={18} style={{ imageRendering: 'pixelated', display: 'block' }} />
+                  : <span style={{ fontSize: '11px', fontWeight: 700 }}>Auto</span>}
               </button>
             </div>
             <CounterLine type={opt.type} />
@@ -130,7 +137,7 @@ export default function SpawnPanel({ visible, producer, resources, autoProduceTy
         );
       })}
       <div style={{ fontSize: '10px', opacity: 0.8, marginTop: '4px' }}>
-        🚩 Right-click a road to set the rally point
+        Right-click a road to aim <b>this building's</b> troops
       </div>
     </div>
   );

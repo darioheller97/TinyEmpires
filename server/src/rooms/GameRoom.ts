@@ -19,6 +19,11 @@ const ECONOMY_INTERVAL_TICKS = 10;   // 1s at 10Hz
 const COMBAT_COOLDOWN_TICKS = 3;     // attack every 0.3s while engaged
 const RETALIATE_INTERVAL_TICKS = 5;  // towers/town hall strike besiegers
 const AUTO_PRODUCE_INTERVAL_TICKS = 60;
+// Per-unit recruit cooldown (ticks, 10/s): a building can't train again until it
+// elapses. Knights 20s, archers 15s, lancers 10s, monks 30s. The 'fast_recruit'
+// tech trims them 20%.
+const RECRUIT_COOLDOWN: Record<string, number> = { knight: 200, archer: 150, lancer: 100, monk: 300 };
+const FAST_RECRUIT_MULT = 0.8;
 const PVE_SPAWN_INTERVAL = 450;      // 45s between lair waves
 const PVE_FIRST_WAVE_TICK = 1800;    // 3 min of peace before monsters stir
 const PVE_MAX_ALIVE_PER_LAIR = 5;
@@ -378,10 +383,16 @@ export class GameRoom extends Room<GameState> {
       city.health = city.maxHealth;
     });
 
-    this.onMessage('spawn_troops', (client, msg: { cityId: string; type: string }) => {
+    this.onMessage('spawn_troops', (client, msg: { buildingId?: string; cityId?: string; type: string }) => {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
-      this.trySpawnTroop(player, msg.cityId || player.connectedCityId, msg.type);
+      // Train at the named building; else fall back to any producer of this type.
+      let building = msg.buildingId ? this.state.buildings.get(msg.buildingId) : undefined;
+      if (!building) {
+        const prod = producerFor(msg.type);
+        building = this.buildingsOf(msg.cityId || player.connectedCityId).find(b => b.type === prod);
+      }
+      if (building) this.trySpawnTroop(player, building, msg.type);
     });
 
     this.onMessage('spawn_villager', (client, msg: { cityId: string; resourceType: string }) => {
@@ -442,6 +453,19 @@ export class GameRoom extends Room<GameState> {
       city.rallyRoadId = msg.roadId;
     });
 
+    // Per-building rally: aim a single production building's troops down a lane,
+    // so two barracks in one city can push to different fronts.
+    this.onMessage('set_building_rally', (client, msg: { buildingId: string; roadId: string }) => {
+      const b = this.state.buildings.get(msg.buildingId);
+      if (!b) return;
+      const city = this.state.cities.get(b.cityId);
+      if (!city || city.ownerId !== client.sessionId) return;
+      if (msg.roadId === '') { b.rallyRoadId = ''; return; }
+      const road = this.state.roads.get(msg.roadId);
+      if (!road || road.fromId !== city.id) return; // must be an outgoing road of this city
+      b.rallyRoadId = msg.roadId;
+    });
+
     // Reactive command: order my whole army on a lane to push / hold / fall back.
     this.onMessage('army_order', (client, msg: { lane: string; command: string }) => {
       const player = this.state.players.get(client.sessionId);
@@ -468,6 +492,16 @@ export class GameRoom extends Room<GameState> {
         u.health = Math.min(u.maxHealth, u.health + heal);
       });
       player.rallyReadyTick = this.state.tick + RALLY_COOLDOWN_TICKS;
+    });
+
+    // "Work song" guitar minigame: the player keeps a combo going to speed up
+    // their villagers' movement & gathering by up to +20%. The client sends the
+    // live boost percent (0..20); clamp it. 0 = back to normal.
+    this.onMessage('set_villager_boost', (client, msg: { boost: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      const pct = Math.max(0, Math.min(20, Number(msg.boost) || 0));
+      player.villagerBoost = 1 + pct / 100;
     });
 
     this.onMessage('research_tech', (client, msg: { techId: string }) => {
@@ -518,19 +552,26 @@ export class GameRoom extends Room<GameState> {
     });
   }
 
-  private trySpawnTroop(player: Player, cityId: string, type: string): boolean {
+  /** Recruit cooldown for a unit type, trimmed by the War Drums tech. */
+  private recruitCooldown(player: Player, type: string): number {
+    const base = RECRUIT_COOLDOWN[type] ?? 100;
+    return Math.round(base * (player.hasTech('fast_recruit') ? FAST_RECRUIT_MULT : 1));
+  }
+
+  // Train a unit at a SPECIFIC production building: respects its recruit cooldown
+  // and sends the troop down that building's own rally road (so two barracks can
+  // push to different lanes). Falls back to the city rally / first exit.
+  private trySpawnTroop(player: Player, building: BuildingNode, type: string): boolean {
     const stats = TROOP_STATS[type];
     if (!stats || !TROOP_TYPES.includes(type as any)) return false;
-    const city = this.state.cities.get(cityId);
+    if (!PRODUCES[building.type]?.includes(type)) return false;     // this building can't train it
+    if (this.state.tick < building.produceReadyTick) return false;  // still cooling down
+    const city = this.state.cities.get(building.cityId);
     if (!city || city.ownerId !== player.id) return false;
     if (player.food < stats.foodCost || player.gold < stats.goldCost) return false;
     if (player.populationUsed + 1 > player.populationCap) return false;
-    // Each unit is trained at its own production building (barracks = knights/
-    // lancers, archery = archers, church = monks).
-    const prod = producerFor(type);
-    if (!prod || !this.buildingsOf(city.id).some(b => b.type === prod)) return false;
     const exits = [...this.state.roads.values()].filter(r => r.fromId === city.id);
-    const targetRoad = exits.find(r => r.id === city.rallyRoadId) || exits[0];
+    const targetRoad = exits.find(r => r.id === (building.rallyRoadId || city.rallyRoadId)) || exits[0];
     if (!targetRoad) return false;
     if (!this.isSlotFree(targetRoad.id, 0)) return false; // exit tile occupied
     player.food -= stats.foodCost; player.gold -= stats.goldCost;
@@ -542,6 +583,7 @@ export class GameRoom extends Room<GameState> {
       unit.health = unit.maxHealth;
     }
     this.state.units.set(unit.id, unit);
+    building.produceReadyTick = this.state.tick + this.recruitCooldown(player, type);
     return true;
   }
 
@@ -659,14 +701,12 @@ export class GameRoom extends Room<GameState> {
       const makes = PRODUCES[b.type];
       if (!makes || !b.autoProduceType) return;
       if (!makes.includes(b.autoProduceType)) { b.autoProduceType = ''; return; } // not trainable here
-      if (this.state.tick - b.lastAutoProduceTick < AUTO_PRODUCE_INTERVAL_TICKS) return;
+      if (this.state.tick < b.produceReadyTick) return; // recruit cooldown gates the cadence
       const city = this.state.cities.get(b.cityId);
       if (!city || !city.ownerId) { b.autoProduceType = ''; return; }
       const player = this.state.players.get(city.ownerId);
       if (!player) { b.autoProduceType = ''; return; }
-      if (this.trySpawnTroop(player, city.id, b.autoProduceType)) {
-        b.lastAutoProduceTick = this.state.tick;
-      }
+      this.trySpawnTroop(player, b, b.autoProduceType); // sets produceReadyTick on success
     });
   }
 
@@ -854,6 +894,9 @@ export class GameRoom extends Room<GameState> {
 
       let vSpeed = VILLAGER_SPEED;
       if (player.hasTech('speed')) vSpeed *= 1.25;
+      // Work-song minigame boost (1.0 … 1.2) speeds movement and gathering alike.
+      const boost = player.villagerBoost || 1;
+      vSpeed *= boost;
 
       // Full backpack (or nothing left to gather) → haul it home and bank it.
       if (unit.carrying >= VILLAGER_CARRY_CAP || (unit.carrying > 0 && !this.hasGatherTarget(unit, home))) {
@@ -910,7 +953,7 @@ export class GameRoom extends Room<GameState> {
       // Working the node: load the backpack (banked later, on the trip home)
       unit.status = 'fighting'; // client plays the work/swing animation
       if (this.state.tick % VILLAGER_HARVEST_INTERVAL === 0) {
-        const take = Math.min(3, target.amount, VILLAGER_CARRY_CAP - unit.carrying);
+        const take = Math.min(3 * boost, target.amount, VILLAGER_CARRY_CAP - unit.carrying);
         unit.carrying += take;
         target.amount -= take;
         // Everything regrows now: sheep + gold via processSheepRegen, trees
@@ -1576,7 +1619,7 @@ export class GameRoom extends Room<GameState> {
     inRange.sort((a, b) => a.d - b.d); // focus the closest threats
     for (let s = 0; s < shots && s < inRange.length; s++) {
       const t = inRange[s].u;
-      const armor = (TROOP_STATS[t.type]?.armor ?? 0) * 0.9; // archers have low penetration
+      const armor = (TROOP_STATS[t.type]?.armor ?? 0) * 0.5; // fort archers punch through ~half the armour (knights aren't immune)
       t.health = Math.max(0, t.health - Math.max(1, Math.floor(dmg - armor)));
       if (t.health <= 0) {
         if (!t.isPvE) this.refundPop(t.ownerId);
@@ -1683,6 +1726,23 @@ export class GameRoom extends Room<GameState> {
       if (u && !u.isPvE) this.refundPop(u.ownerId);
       this.state.units.delete(id);
     });
+
+    // The defender's pawns flee the fallen fort, running to their nearest other
+    // fort (where they re-home and resume gathering). If they have nowhere to
+    // run, they'll be cleared when their empire is eliminated below.
+    if (oldOwnerId) {
+      const refuge = [...this.state.cities.values()].filter(c => c.ownerId === oldOwnerId && c.id !== city.id);
+      if (refuge.length > 0) {
+        this.state.units.forEach(u => {
+          if (u.type !== 'villager' || u.ownerId !== oldOwnerId || u.homeCityId !== city.id) return;
+          let best = refuge[0], bestD = Infinity;
+          refuge.forEach(c => { const d = Math.hypot(c.x - u.x, c.y - u.y); if (d < bestD) { bestD = d; best = c; } });
+          u.homeCityId = best.id;
+          u.targetResourceId = ''; // re-acquire resources near the new home
+          u.status = 'marching';
+        });
+      }
+    }
 
     this.checkVictory();
   }

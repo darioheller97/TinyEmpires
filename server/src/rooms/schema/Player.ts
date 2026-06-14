@@ -5,6 +5,7 @@ export const TECH_TREE = [
   { id: 'dmg_lancer', name: 'Lancer Training', desc: '+25% Lancer damage', cost: 50, category: 'unit' },
   { id: 'dmg_archer', name: 'Archer Training', desc: '+25% Archer damage', cost: 50, category: 'unit' },
   { id: 'hp_all', name: 'Veteran Armor', desc: '+20% all unit HP', cost: 80, category: 'unit' },
+  { id: 'fast_recruit', name: 'War Drums', desc: 'Recruit units 20% faster', cost: 70, category: 'unit' },
   { id: 'speed', name: 'Paved Roads', desc: '+25% villager speed', cost: 60, category: 'economy' },
   { id: 'prod_wood', name: 'Iron Axes', desc: '+50% wood production', cost: 40, category: 'economy' },
   { id: 'prod_food', name: 'Crop Rotation', desc: '+50% food production', cost: 40, category: 'economy' },
@@ -32,6 +33,8 @@ export class Player extends Schema {
   @type('boolean') isBot: boolean = false;
   // Tick the Rally commander ability becomes usable again (synced for the cooldown UI).
   @type('number') rallyReadyTick: number = 0;
+  // Villager speed/gather multiplier (1..1.2) driven by the "work song" minigame.
+  @type('number') villagerBoost: number = 1;
   lastEconomyTick: number = 0;
 
   // Tech flags (comma-separated string since Colyseus MapSchema is complex)

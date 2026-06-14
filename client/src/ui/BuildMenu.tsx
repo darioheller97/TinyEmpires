@@ -41,9 +41,9 @@ const ROW_BTN_OFF: React.CSSProperties = { ...ROW_BTN, ...BUTTON_DISABLED, width
 const SMALL_ICON: React.CSSProperties = { ...RES_ICON, width: 20, height: 20 };
 
 const VILLAGER_OPTIONS = [
-  { resourceType: 'tree', name: '🪓 Woodcutter' },
-  { resourceType: 'sheep', name: '🐑 Shepherd' },
-  { resourceType: 'gold', name: '⛏️ Miner' },
+  { resourceType: 'tree', name: 'Woodcutter' },
+  { resourceType: 'sheep', name: 'Shepherd' },
+  { resourceType: 'gold', name: 'Miner' },
 ];
 const VILLAGER_COST = 15;
 

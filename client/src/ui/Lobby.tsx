@@ -58,7 +58,7 @@ export default function Lobby({ lobby, onSelectColor, onToggleReady, onStart, on
             }}>
               <span style={{ width: 18, height: 18, borderRadius: '50%', background: p.colorHex, border: '2px solid #4a3417' }} />
               <span style={{ flex: 1, textAlign: 'left', color: '#4a3417', fontWeight: 700 }}>
-                {p.name}{p.id === lobby.mySessionId ? ' (you)' : ''}{p.isHost ? ' 👑' : ''}
+                {p.name}{p.id === lobby.mySessionId ? ' (you)' : ''}{p.isHost ? ' (host)' : ''}
               </span>
               <span style={{ color: p.ready ? '#2e7d32' : '#a06a2c', fontWeight: 700, fontSize: 13 }}>
                 {p.ready ? 'Ready' : 'Not ready'}

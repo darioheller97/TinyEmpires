@@ -100,6 +100,11 @@ export class GameClient {
     this.room?.send('set_rally', { cityId, roadId });
   }
 
+  /** Per-building rally: aim one production building's troops down a road. */
+  setBuildingRally(buildingId: string, roadId: string): void {
+    this.room?.send('set_building_rally', { buildingId, roadId });
+  }
+
   // Reactive command: order my army on a lane (push / hold / fallback) + Rally.
   armyOrder(lane: string, command: string): void {
     this.room?.send('army_order', { lane, command });
@@ -107,6 +112,11 @@ export class GameClient {
 
   commanderRally(lane: string, power = 1): void {
     this.room?.send('commander_rally', { lane, power });
+  }
+
+  /** Work-song minigame: set the villager speed/gather boost (0..20 %). */
+  setVillagerBoost(boost: number): void {
+    this.room?.send('set_villager_boost', { boost });
   }
 
   buildStructure(cityId: string, type: string): void {
@@ -121,8 +131,8 @@ export class GameClient {
     this.room?.send('upgrade_town_hall', { cityId });
   }
 
-  spawnTroops(cityId: string, type: string): void {
-    this.room?.send('spawn_troops', { cityId, type });
+  spawnTroops(cityId: string, type: string, buildingId?: string): void {
+    this.room?.send('spawn_troops', { cityId, type, buildingId });
   }
 
   spawnVillager(cityId: string, resourceType: string): void {

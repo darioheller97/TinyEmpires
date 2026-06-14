@@ -13,6 +13,8 @@ import Lobby, { LobbyView, LobbyPlayer } from './ui/Lobby';
 import EndScreen from './ui/EndScreen';
 import HowToPlay from './ui/HowToPlay';
 import ArmyOrders from './ui/ArmyOrders';
+import WorkSong from './ui/WorkSong';
+import SettingsMenu from './ui/SettingsMenu';
 import { PANEL as SKIN_PANEL } from './ui/skin';
 import { GameClient, MatchSettings } from './network/GameClient';
 import { playSfx, toggleMute } from './game/audio';
@@ -48,11 +50,11 @@ const ICON_BTN: React.CSSProperties = {
 };
 
 const BUILD_OPTIONS: BuildOption[] = [
-  { type: 'house', name: 'House (+5 pop)', cost: { wood: 40, food: 10, gold: 0 } },
-  { type: 'barracks', name: 'Barracks', cost: { wood: 90, food: 20, gold: 10 } },
-  { type: 'archery', name: 'Archery', cost: { wood: 90, food: 15, gold: 15 } },
-  { type: 'church', name: 'Church', cost: { wood: 80, food: 25, gold: 20 } },
-  { type: 'defense_tower', name: 'Defense Tower', cost: { wood: 160, food: 15, gold: 20 } },
+  { type: 'house', name: 'House (+5 pop)', cost: { wood: 40, food: 0, gold: 0 } },
+  { type: 'barracks', name: 'Barracks', cost: { wood: 90, food: 0, gold: 10 } },
+  { type: 'archery', name: 'Archery', cost: { wood: 90, food: 0, gold: 15 } },
+  { type: 'church', name: 'Church', cost: { wood: 80, food: 0, gold: 20 } },
+  { type: 'defense_tower', name: 'Defense Tower', cost: { wood: 160, food: 0, gold: 20 } },
 ];
 
 const PRODUCER_TYPES = ['barracks', 'archery', 'church'];
@@ -92,7 +94,10 @@ export default function App() {
   const [pings, setPings] = useState<MinimapPing[]>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [workSongOpen, setWorkSongOpen] = useState(false);
   const sceneRef = useRef<GameScene | null>(null);
+  const lastBoostSent = useRef(-1);
   const prevGold = useRef(20);
 
   // Single state subscriber: drives lobby view + phase transitions.
@@ -190,7 +195,7 @@ export default function App() {
   }, [selection]);
   const handleSpawn = useCallback((type: string) => {
     if (selection.type === 'building' && selection.data?.cityId) {
-      client()?.spawnTroops(selection.data.cityId, type);
+      client()?.spawnTroops(selection.data.cityId, type, selection.id);
       playSfx('unit_recruit', { volume: 0.5 });
     }
   }, [selection]);
@@ -213,6 +218,13 @@ export default function App() {
     if (selection.type === 'army') sceneRef.current?.castRally();
   }, [selection]);
   const handleToggleMute = useCallback(() => setMuted(toggleMute()), []);
+  // Work-song minigame → throttle the villager-boost message (dedupe on change).
+  const handleWorkBoost = useCallback((pct: number) => {
+    const v = Math.round(pct);
+    if (v === lastBoostSent.current) return;
+    lastBoostSent.current = v;
+    client()?.setVillagerBoost(v);
+  }, []);
   const handleRotateRoute = useCallback(() => { sceneRef.current?.rotateIntersectionRoute(); }, []);
   const handleNavigate = useCallback((x: number, y: number) => { sceneRef.current?.centerCamera(x, y); }, []);
 
@@ -264,6 +276,13 @@ export default function App() {
         <div style={{ ...TOP_LEFT, display: 'flex', gap: '8px' }}>
           <button
             style={ICON_BTN}
+            onClick={() => { playSfx('ui_click', { volume: 0.4 }); setSettingsOpen(true); }}
+            title="Settings"
+          >
+            <img src="/assets/UI/Icons/Regular_02.png" alt="Settings" width={40} height={40} style={{ imageRendering: 'pixelated', display: 'block' }} />
+          </button>
+          <button
+            style={ICON_BTN}
             onClick={() => { playSfx('ui_click', { volume: 0.4 }); setTechTreeVisible(true); }}
             title="Tech Tree"
           >
@@ -276,11 +295,6 @@ export default function App() {
           >
             <img src="/assets2/UI/icon_music.png" alt={muted ? 'Unmute' : 'Mute'} width={40} height={40} style={{ imageRendering: 'pixelated', display: 'block' }} />
           </button>
-          <button
-            style={{ ...ICON_BTN, fontSize: 24, fontWeight: 800, color: '#fff', textShadow: '0 2px 3px rgba(0,0,0,0.7)', background: 'rgba(31,22,11,0.7)', borderRadius: 8 }}
-            onClick={() => { playSfx('ui_click', { volume: 0.4 }); setShowHelp(true); }}
-            title="How to Play"
-          >?</button>
         </div>
         <div style={TOP_RIGHT}>
           <Minimap data={minimapData} pings={pings} onNavigate={handleNavigate} />
@@ -304,9 +318,17 @@ export default function App() {
             producer={isProducerSelected ? selection.name : ''}
             resources={resources}
             autoProduceType={isProducerSelected ? (selectionData.autoProduceType || '') : ''}
+            cooldownReadyIn={isProducerSelected ? (selectionData.cooldownReadyIn || 0) : 0}
             onSpawn={handleSpawn}
             onSetAutoProduce={handleSetAutoProduce}
           />
+          {selection.type === 'none' && !workSongOpen && (
+            <button
+              style={{ ...SKIN_PANEL, padding: '8px 16px', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+              onClick={() => { playSfx('ui_click', { volume: 0.4 }); setWorkSongOpen(true); }}
+              title="Play the work song to speed up your villagers"
+            >Work Song <span style={{ opacity: 0.7, fontSize: 11 }}>— speed up villagers</span></button>
+          )}
         </div>
         <div style={BOTTOM_LEFT}>
           <InfoPanel selection={selection} />
@@ -349,6 +371,18 @@ export default function App() {
       />
 
       <HowToPlay visible={showHelp} onClose={() => setShowHelp(false)} />
+
+      <SettingsMenu
+        visible={settingsOpen}
+        onHowToPlay={() => { setSettingsOpen(false); setShowHelp(true); }}
+        onClose={() => setSettingsOpen(false)}
+      />
+
+      <WorkSong
+        visible={workSongOpen}
+        onClose={() => setWorkSongOpen(false)}
+        onBoost={handleWorkBoost}
+      />
 
       {roomPhase === 'finished' && (
         <EndScreen won={winnerId === mySessionId} onBackToMenu={backToMenu} />

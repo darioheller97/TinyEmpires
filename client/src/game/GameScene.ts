@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { GameClient } from '../network/GameClient';
 import { preloadAssets, createAnims, unitSkin, factionOf } from './assets';
 import { buildTerrain, TerrainInfo, TILE, WATER, GRASS, ELEV } from './terrain';
-import { initAudio, startAmbient, playSfx, setBattleIntensity } from './audio';
+import { initAudio, startAmbient, playSfx, setBattleIntensity, resetAmbient } from './audio';
 
 interface NodeInfo { id: string; x: number; y: number; name: string; kind: 'city' | 'intersection' | 'lair'; }
 interface RoadData { id: string; fromId: string; toId: string; splinePoints: { x: number; y: number }[]; tilePath: { c: number; r: number }[]; }
@@ -31,6 +31,7 @@ export interface CityData {
 export interface BuildData {
   id: string; cityId: string; type: string; x: number; y: number; level: number;
   health: number; maxHealth: number; autoProduceType: string;
+  produceReadyTick?: number; cooldownReadyIn?: number;
 }
 export interface LairData { id: string; x: number; y: number; type: string; health: number; maxHealth: number; }
 // A drawn city: its container, live data, and the battlement archers (count
@@ -176,6 +177,12 @@ export default class GameScene extends Phaser.Scene {
     if (import.meta.env.DEV) (window as any).__scene = this;
     createAnims(this);
     initAudio(this);
+    // Stop the looping music when this scene/game tears down, so a new match
+    // starts one fresh bed instead of stacking a second song on the old one.
+    this.events.once('shutdown', () => resetAmbient());
+    this.events.once('destroy', () => resetAmbient());
+    // Use the Tiny Swords arrow over the game canvas (Phaser owns the canvas cursor).
+    this.input.setDefaultCursor("url('/assets/UI/Pointers/01.png') 10 4, auto");
     this.input.once('pointerdown', () => startAmbient()); // browsers gate audio behind a gesture
     this.selectionRing = this.add.graphics().setDepth(40);
     this.routeArrowGfx = this.add.graphics().setDepth(30);
@@ -452,7 +459,7 @@ export default class GameScene extends Phaser.Scene {
       const btn = this.add.circle(bx, by, 15, isMine ? 0x8b6914 : 0x5c4033, 1);
       btn.setStrokeStyle(2, 0xffd700, isMine ? 1 : 0.5);
       btn.setInteractive(new Phaser.Geom.Circle(0, 0, 15), Phaser.Geom.Circle.Contains);
-      const short = dest.kind === 'lair' ? (dest.name.startsWith('Spider') ? '🕷' : '👺') : dest.name.charAt(0);
+      const short = dest.name.charAt(0);
       const txt = this.add.text(bx, by, short, {
         fontSize: '12px', color: '#ffd700', fontFamily: 'monospace', stroke: '#000', strokeThickness: 2,
       }).setOrigin(0.5);
@@ -1104,6 +1111,13 @@ export default class GameScene extends Phaser.Scene {
       const frameRate = Math.max(6, Math.round(frames / 0.4));
       u.sprite.play({ key: attackKey, repeat: 0, frameRate }).chain(`${u.base}_idle`);
       u.anim = attackKey;
+      // Archers loose their arrow ON the beat, in time with the draw (so ranged
+      // strikes read on the rhythm just like melee swings).
+      if (u.base.includes('_archer')) {
+        const ownerId = u.container.getData('ownerId') as string;
+        const target = this.nearestEnemyNear(u.container.x, u.container.y, ownerId, 260);
+        if (target) this.fireArrow(u.container.x, u.container.y - 12, target.x, target.y, u.base.split('_')[1]);
+      }
     });
   }
 
@@ -1191,16 +1205,7 @@ export default class GameScene extends Phaser.Scene {
       this.playShoot(e.gfx.getAt(1) as Phaser.GameObjects.Sprite, color);
       this.fireArrow(e.data.x, e.data.y - 34, target.x, target.y, color);
     });
-    // Field archer units that are mid-attack already play the shoot anim — add
-    // the flying arrow so the strike reads as ranged.
-    this.unitGfx.forEach(u => {
-      if (!u.container.visible || !u.base.includes('_archer') || !u.anim.endsWith('_attack')) return;
-      const ownerId = u.container.getData('ownerId') as string;
-      const target = this.nearestEnemyNear(u.container.x, u.container.y, ownerId, 240);
-      if (!target) return;
-      const color = u.base.split('_')[1];
-      this.fireArrow(u.container.x, u.container.y - 12, target.x, target.y, color);
-    });
+    // (Field archers now loose their arrows on the beat in swingCombatUnits.)
   }
 
   private getUnitWorldPos(unit: any): { x: number; y: number } | null {
@@ -1237,7 +1242,7 @@ export default class GameScene extends Phaser.Scene {
     for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
     g.strokePath();
     const end = pts[pts.length - 1];
-    const flag = this.add.text(end.x, end.y - 20, '🚩', { fontSize: '22px' }).setOrigin(0.5).setDepth(191);
+    const flag = this.add.text(end.x, end.y - 20, '◆', { fontSize: '20px', color: '#ffe07a', stroke: '#2a1d0e', strokeThickness: 3 }).setOrigin(0.5).setDepth(191);
     this.tweens.add({ targets: [g, flag], alpha: 0, duration: 1400, ease: 'Power2', onComplete: () => { g.destroy(); flag.destroy(); } });
   }
 
@@ -1649,7 +1654,7 @@ export default class GameScene extends Phaser.Scene {
     this.castNotes = [];
     for (let i = 0; i < RHYTHM_NOTES; i++) this.castNotes.push({ target: firstBeat + i * BEAT_PERIOD_MS, judged: false, score: 0 });
     this.buildCastOverlay();
-    this.emitEvent('rallycast', '♪ Rally! Tap SPACE on each beat', { color: '#ffd54a', throttleMs: 300, throttleKey: 'rallycast' });
+    this.emitEvent('rallycast', 'Rally! Tap SPACE on each beat', { color: '#ffd54a', throttleMs: 300, throttleKey: 'rallycast' });
   }
 
   private buildCastOverlay(): void {
@@ -1660,7 +1665,7 @@ export default class GameScene extends Phaser.Scene {
     base.fillStyle(0x000000, 0.32).fillCircle(0, 0, R + 10);
     base.fillStyle(0xffe07a, 0.16).fillCircle(0, 0, R);
     base.lineStyle(4, 0xffe07a, 0.95).strokeCircle(0, 0, R);
-    const prompt = this.add.text(0, -R - 30, '♪ RALLY — SPACE / tap on the beat', {
+    const prompt = this.add.text(0, -R - 30, 'RALLY — tap SPACE on the beat', {
       fontSize: '14px', color: '#ffe9a8', fontFamily: 'monospace', stroke: '#000', strokeThickness: 4,
     }).setOrigin(0.5);
     const ring = this.add.graphics();
@@ -1703,7 +1708,13 @@ export default class GameScene extends Phaser.Scene {
     else if (a <= RHYTHM_GOOD_MS) { score = 0.55; label = 'GOOD'; color = '#ffe07a'; }
     cur.judged = true; cur.score = score;
     this.spawnJudgment(label, color);
-    playSfx(score > 0 ? 'coins_gold' : 'building_destroyed', { volume: 0.38, throttleMs: 30, throttleKey: 'rhythm' });
+    const hits = this.castNotes.filter(n => n.judged && n.score > 0).length; // rising pitch with the streak
+    if (score > 0) {
+      playSfx(score >= 1 ? 'sword_clash' : 'sword_clash2', { volume: 0.45, rate: 0.92 + hits * 0.06, throttleMs: 20, throttleKey: 'rhythm' });
+      if (score >= 1) this.cameras.main.shake(110, 0.0035); // light punch on a perfect note
+    } else {
+      playSfx('building_destroyed', { volume: 0.25, throttleMs: 30, throttleKey: 'rhythm' });
+    }
   }
 
   private spawnJudgment(text: string, color: string, big = false): void {
@@ -1738,7 +1749,7 @@ export default class GameScene extends Phaser.Scene {
     this.impactBurst(x, y, p >= 0.6);
     if (p >= 0.95) this.sparkleRing(x, y - 12, '#fff1a8');
     this.shakeAt(x, y, 0.003 + 0.004 * p, 160);
-    this.emitEvent('rally', p >= 0.95 ? '⚔ PERFECT Rally!' : '⚔ Rally!', { x, y, color: '#ffd54a', throttleMs: 400, throttleKey: 'rally' });
+    this.emitEvent('rally', p >= 0.95 ? 'Perfect Rally!' : 'Rally!', { x, y, color: '#ffd54a', throttleMs: 400, throttleKey: 'rally' });
     playSfx('coins_gold', { volume: 0.4, x, y, throttleMs: 300, throttleKey: 'rally' });
   }
 
@@ -1874,7 +1885,8 @@ export default class GameScene extends Phaser.Scene {
           if (d < bestD) { bestD = d; best = road; }
         }
       }
-      if (best) { this.client?.setRally(cityId, best.id); this.flashRally(best); }
+      // Per-building rally: this specific production building marches its troops here.
+      if (best) { this.client?.setBuildingRally(this.selection.id, best.id); this.flashRally(best); }
     });
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
       if (this.dragMoved) return;
@@ -1988,14 +2000,14 @@ export default class GameScene extends Phaser.Scene {
         const involved = (!!myId && (s.ownerId === myId || prevOwner === myId));
         const color = newReal ? (this.playerColors.get(s.ownerId) || '#cccccc') : '#9aa3ad';
         this.captureFlourish(entry.data.x, entry.data.y, color, mine, involved);
-        if (mine) this.emitEvent('capture', `🏰 Captured ${entry.data.name}!`, { x: entry.data.x, y: entry.data.y, color: '#7ad17a' });
-        else if (prevOwner === myId) this.emitEvent('lost', `💀 Lost ${entry.data.name}!`, { x: entry.data.x, y: entry.data.y, color: '#ff6a5a' });
+        if (mine) this.emitEvent('capture', `Captured ${entry.data.name}!`, { x: entry.data.x, y: entry.data.y, color: '#7ad17a' });
+        else if (prevOwner === myId) this.emitEvent('lost', `Lost ${entry.data.name}!`, { x: entry.data.x, y: entry.data.y, color: '#ff6a5a' });
       }
       // Town-hall level-up flourish for my own keep.
       if (myId && s.townHallLevel > prevLevel && s.ownerId === myId && this.time.now - this.mapReadyAt > 1500) {
         this.sparkleRing(entry.data.x, entry.data.y - 10, this.playerColors.get(myId) || '#ffe87a');
         playSfx('coins_gold', { volume: 0.5, x: entry.data.x, y: entry.data.y });
-        this.emitEvent('levelup', `⬆ ${entry.data.name} reached Lv.${s.townHallLevel}`, { x: entry.data.x, y: entry.data.y, color: '#ffe87a' });
+        this.emitEvent('levelup', `${entry.data.name} reached Lv.${s.townHallLevel}`, { x: entry.data.x, y: entry.data.y, color: '#ffe87a' });
       }
       entry.data.ownerId = s.ownerId;
       entry.data.townHallLevel = s.townHallLevel;
@@ -2007,7 +2019,7 @@ export default class GameScene extends Phaser.Scene {
         this.showFloatingDamage(entry.data.x, entry.data.y - 40, prevHealth - s.health, '#ff8800');
         // Raid warning when one of my forts is being hit (throttled per fort).
         if (myId && s.ownerId === myId) {
-          this.emitEvent('attack', `⚔ ${entry.data.name} is under attack!`, {
+          this.emitEvent('attack', `${entry.data.name} is under attack!`, {
             x: entry.data.x, y: entry.data.y, color: '#ff5a4a',
             throttleKey: `attack_${id}`, throttleMs: 7000,
           });
@@ -2035,8 +2047,8 @@ export default class GameScene extends Phaser.Scene {
         const involved = !!myId && (s.ownerId === myId || prevOwner === myId);
         const color = newReal ? (this.playerColors.get(s.ownerId) || '#cccccc') : '#9aa3ad';
         this.captureFlourish(entry.data.x, entry.data.y, color, mine, involved);
-        if (mine) this.emitEvent('obj_take', `✦ Seized the ${meta.name}!`, { x: entry.data.x, y: entry.data.y, color: '#ffe07a' });
-        else if (prevOwner === myId) this.emitEvent('obj_lost', `✦ Lost the ${meta.name}!`, { x: entry.data.x, y: entry.data.y, color: '#ff6a5a' });
+        if (mine) this.emitEvent('obj_take', `Seized the ${meta.name}!`, { x: entry.data.x, y: entry.data.y, color: '#ffe07a' });
+        else if (prevOwner === myId) this.emitEvent('obj_lost', `Lost the ${meta.name}!`, { x: entry.data.x, y: entry.data.y, color: '#ff6a5a' });
       }
       entry.data.ownerId = s.ownerId;
       entry.data.capture = s.capture;
@@ -2052,10 +2064,19 @@ export default class GameScene extends Phaser.Scene {
       this.drawBuilding({
         id: b.id, cityId: b.cityId, type: b.type, x: b.x, y: b.y,
         level: b.level || 1, health: b.health, maxHealth: b.maxHealth,
-        autoProduceType: b.autoProduceType || '',
+        autoProduceType: b.autoProduceType || '', produceReadyTick: b.produceReadyTick || 0,
       });
       this.cityBuildingCounts.set(b.cityId, (this.cityBuildingCounts.get(b.cityId) || 0) + 1);
     });
+    // Keep a selected building's panel live (auto-produce state + recruit cooldown).
+    if (this.selection.type === 'building') {
+      const e = this.buildingGfx.get(this.selection.id);
+      if (e) {
+        e.data.cooldownReadyIn = Math.max(0, Math.round(((e.data.produceReadyTick || 0) - this.serverTick) * 0.1));
+        const onSelection = this.game.registry.get('onSelectionChange') as ((s: SelectionInfo) => void) | undefined;
+        if (onSelection) onSelection({ type: 'building', id: this.selection.id, name: this.selection.name, data: e.data });
+      }
+    }
     this.buildingGfx.forEach((entry, id) => {
       if (!liveBuildings.has(id)) {
         entry.gfx.destroy();
@@ -2146,7 +2167,7 @@ export default class GameScene extends Phaser.Scene {
               this.sparkleRing(home.data.x, home.data.y - 10, this.playerColors.get(myId) || '#9cff7a');
               playSfx('coins_gold', { volume: 0.45, x: home.data.x, y: home.data.y });
             }
-            this.emitEvent('tech', `🔬 Research complete (${fresh.length} new)`, { color: '#9cff7a' });
+            this.emitEvent('tech', `Research complete (${fresh.length} new)`, { color: '#9cff7a' });
           }
         }
       }

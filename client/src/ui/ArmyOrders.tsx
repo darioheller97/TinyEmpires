@@ -13,10 +13,10 @@ interface Props {
 
 const WRAP: CSSProperties = { ...PANEL, minWidth: 232, fontSize: 12 };
 const ROW: CSSProperties = { display: 'flex', gap: 4, marginBottom: 4 };
-const STANCES: { cmd: string; label: string; icon: string; tip: string }[] = [
-  { cmd: '', label: 'Push', icon: '⚔', tip: 'Advance down the lane (default) — key 1' },
-  { cmd: 'hold', label: 'Hold', icon: '🛡', tip: 'Brace in place: stop and take less damage — key 2' },
-  { cmd: 'fallback', label: 'Fall Back', icon: '↩', tip: 'Retreat toward your nearest city — key 3' },
+const STANCES: { cmd: string; label: string; tip: string }[] = [
+  { cmd: '', label: 'Push', tip: 'Advance down the lane (default) — key 1' },
+  { cmd: 'hold', label: 'Hold', tip: 'Brace in place: stop and take less damage — key 2' },
+  { cmd: 'fallback', label: 'Fall Back', tip: 'Retreat toward your nearest city — key 3' },
 ];
 
 export default function ArmyOrders({ visible, count, hpPct, order, rallyReadyIn, onOrder, onRally }: Props) {
@@ -38,7 +38,7 @@ export default function ArmyOrders({ visible, count, hpPct, order, rallyReadyIn,
               title={s.tip}
               onClick={() => onOrder(s.cmd)}
             >
-              {s.icon} {s.label}
+              {s.label}
             </button>
           );
         })}
@@ -49,7 +49,7 @@ export default function ArmyOrders({ visible, count, hpPct, order, rallyReadyIn,
         title="Rally: start a beat combo — tap SPACE on each beat. Better rhythm = bigger damage + heal (key R)"
         onClick={onRally}
       >
-        {rallyReady ? '✊ Rally! — tap to the beat (R)' : `✊ Rally — ${rallyReadyIn}s`}
+        {rallyReady ? 'Rally! — tap to the beat (R)' : `Rally — ${rallyReadyIn}s`}
       </button>
     </div>
   );

@@ -40,7 +40,7 @@ check('match started after ready', host.state.phase === 'active', `phase=${host.
 const h = host.state.players.get(host.sessionId), g = host.state.players.get(guest.sessionId);
 check('both players got a capital', !!h?.connectedCityId && !!g?.connectedCityId && h.connectedCityId !== g.connectedCityId,
   `${h?.connectedCityId} vs ${g?.connectedCityId}`);
-check('contested objectives spawned', host.state.objectives.size > 0, `count=${host.state.objectives.size}`);
+check('contested camps disabled', host.state.objectives.size === 0, `count=${host.state.objectives.size}`);
 host.leave(); guest.leave();
 
 // ── Solo: auto-ready + auto-start, single player ──
@@ -65,6 +65,26 @@ if (armyUnit) {
   await sleep(400);
   check('commander_rally starts the cooldown', soloMe.rallyReadyTick > 0, `readyTick=${soloMe.rallyReadyTick}`);
 }
+
+// Per-building rally + recruit cooldown (the knight above was trained at the barracks)
+const barr = [...solo.state.buildings.values()].find(b => b.cityId === soloMe.connectedCityId && b.type === 'barracks');
+check('barracks exists', !!barr);
+if (barr) {
+  check('recruit cooldown set after training', barr.produceReadyTick > solo.state.tick,
+    `ready=${barr.produceReadyTick} tick=${solo.state.tick}`);
+  const exit = [...solo.state.roads.values()].find(r => r.fromId === soloMe.connectedCityId);
+  solo.send('set_building_rally', { buildingId: barr.id, roadId: exit.id });
+  await sleep(250);
+  check('per-building rally stored', barr.rallyRoadId === exit.id, `rally=${barr.rallyRoadId}`);
+}
+
+// Work-song villager boost
+solo.send('set_villager_boost', { boost: 15 });
+await sleep(300);
+check('work-song boost applied', Math.abs(soloMe.villagerBoost - 1.15) < 0.001, `boost=${soloMe.villagerBoost}`);
+solo.send('set_villager_boost', { boost: 0 });
+await sleep(200);
+check('work-song boost cleared', Math.abs(soloMe.villagerBoost - 1) < 0.001, `boost=${soloMe.villagerBoost}`);
 solo.leave();
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);

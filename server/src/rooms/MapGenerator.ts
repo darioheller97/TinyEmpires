@@ -257,7 +257,8 @@ export function generateMap(seed: number, opts: MapOpts = {}): GeneratedMap {
   // Sited at road-lane midpoints near the map centre so marching armies pass
   // right over them; the trailing player gets a comeback target and the leader
   // has to split forces to hold them.
-  const objCount = opts.size === 'large' ? 4 : opts.size === 'small' ? 2 : 3;
+  // Contested camps are disabled for now (the reward/capture code stays dormant).
+  const objCount = 0;
   const OBJ_KINDS: GenObjective['kind'][] = ['mine', 'merc', 'shrine'];
   const objectives: GenObjective[] = [];
   const center = { x: width / 2, y: height / 2 };
