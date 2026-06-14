@@ -101,6 +101,7 @@ export default class GameScene extends Phaser.Scene {
   private rtsSel = new Set<string>();
   private rtsDragStart: { x: number; y: number } | null = null;
   private rtsRightDrag = 0; // accumulated right-drag distance (pan vs. click-command)
+  private camKeys: Record<string, Phaser.Input.Keyboard.Key> | null = null; // WASD/arrow camera pan
   private rtsSelBox: Phaser.GameObjects.Graphics | null = null;
   private rtsSelRings: Phaser.GameObjects.Graphics | null = null;
   private rtsFormation = 'box'; // box | line | wedge | vanguard
@@ -218,7 +219,8 @@ export default class GameScene extends Phaser.Scene {
       .setOrigin(0).setScrollFactor(0).setDepth(58);
   }
 
-  update(time: number): void {
+  update(time: number, delta: number): void {
+    this.updateKeyboardPan(delta);
     // A steady 75 BPM pulse under the music so the track always has a beat.
     // It free-runs at the unit-step interval and gets re-anchored to the real
     // hop below, so when troops march the beat stays the one they move to.
@@ -1979,6 +1981,11 @@ export default class GameScene extends Phaser.Scene {
   }
 
   private setupCameraControls(): void {
+    // WASD / arrow keys scroll the camera (both game modes).
+    this.camKeys = this.input.keyboard?.addKeys(
+      { up: 'W', down: 'S', left: 'A', right: 'D', up2: 'UP', down2: 'DOWN', left2: 'LEFT', right2: 'RIGHT' },
+      false, // don't capture — leave keys usable elsewhere
+    ) as Record<string, Phaser.Input.Keyboard.Key>;
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (this.towerPlace) this.updateTowerGhost(p);
       if (this.rtsMode) {
@@ -2089,6 +2096,21 @@ export default class GameScene extends Phaser.Scene {
     const dx = p.x - p.prevPosition.x, dy = p.y - p.prevPosition.y;
     this.cameras.main.scrollX -= dx / this.cameras.main.zoom;
     this.cameras.main.scrollY -= dy / this.cameras.main.zoom;
+  }
+
+  // WASD / arrow keys scroll the camera at a steady world-space rate (frame-rate
+  // independent via delta; faster when zoomed out so it feels constant on screen).
+  private updateKeyboardPan(delta: number): void {
+    const k = this.camKeys;
+    if (!k) return;
+    const cam = this.cameras.main;
+    const step = (700 * (delta / 1000)) / cam.zoom;
+    let dx = 0, dy = 0;
+    if (k.left.isDown || k.left2.isDown) dx -= step;
+    if (k.right.isDown || k.right2.isDown) dx += step;
+    if (k.up.isDown || k.up2.isDown) dy -= step;
+    if (k.down.isDown || k.down2.isDown) dy += step;
+    if (dx !== 0 || dy !== 0) { cam.scrollX += dx; cam.scrollY += dy; }
   }
 
   private ensureRtsGfx(): void {
