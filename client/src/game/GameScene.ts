@@ -333,14 +333,19 @@ export default class GameScene extends Phaser.Scene {
     // own cadence here rather than in swingCombatUnits.
     if (this.rtsMode) this.tickRtsArchers(time);
 
-    // RTS: redraw selection rings under the currently selected units.
+    // RTS: redraw selection rings under the currently selected units — a filled
+    // translucent disc plus a bright outline so the picked troops clearly read.
     if (this.rtsMode && this.rtsSel.size > 0) {
       this.ensureRtsGfx();
-      const g = this.rtsSelRings!; g.clear(); g.lineStyle(2, 0x7CFC00, 0.9);
+      const g = this.rtsSelRings!; g.clear();
       this.rtsSel.forEach(id => {
         const u = this.unitGfx.get(id);
         if (!u) { this.rtsSel.delete(id); return; }
-        g.strokeEllipse(u.container.x, u.container.y + 8, 30, 18);
+        const x = u.container.x, y = u.container.y + 16;
+        // Cyan/white reads clearly on green terrain (a green ring vanished on grass).
+        g.fillStyle(0x29d4ff, 0.18); g.fillEllipse(x, y, 42, 22);
+        g.lineStyle(3.5, 0x0a3550, 0.55); g.strokeEllipse(x, y, 42, 22);
+        g.lineStyle(2, 0xeaffff, 0.95); g.strokeEllipse(x, y, 42, 22);
       });
     } else if (this.rtsSelRings) {
       this.rtsSelRings.clear();
@@ -616,9 +621,9 @@ export default class GameScene extends Phaser.Scene {
   // Open Field renders units & buildings larger (tiles stay 64px). Beat mode is
   // unchanged. ~1.6× turns the 0.62 unit scale into roughly "size 1".
   private rtsScale(base: number): number { return this.rtsMode ? base * 1.6 : base; }
-  // Mobile field units read smaller than buildings at 1.6×, so troops get a
-  // bigger bump (~0.62 → ~1.5) to feel like proper RTS units on the open map.
-  private rtsUnitScale(base: number): number { return this.rtsMode ? base * 2.4 : base; }
+  // Field units read a little smaller than buildings at 1.6×, so troops get a
+  // modest extra bump (~0.62 → ~1.18) without dwarfing the structures.
+  private rtsUnitScale(base: number): number { return this.rtsMode ? base * 1.9 : base; }
 
   // The keep grows with its town-hall level so progress reads at a glance.
   private castleScale(level: number): number {
@@ -704,6 +709,12 @@ export default class GameScene extends Phaser.Scene {
       container.add(ar);
     }
     if ((b as any).constructing) container.setData('constructing', true);
+
+    // Damage bar — hidden until the building is hurt (mirrors unit/city bars).
+    const hpBar = this.makeBar(36, 8).setPosition(0, this.rtsScale(-46));
+    hpBar.setVisible(false);
+    container.add(hpBar);
+    container.setData('hpBar', hpBar);
 
     container.setDepth(DEPTH_ENTITY + b.y * 0.01);
     container.setInteractive(new Phaser.Geom.Rectangle(-26, -40, 52, 64), Phaser.Geom.Rectangle.Contains);
@@ -1112,7 +1123,7 @@ export default class GameScene extends Phaser.Scene {
     const sprite = this.add.sprite(0, 0, `${skin.base}_idle`).setScale(uScale);
     const animKey = `${skin.base}_${desiredAnim}`;
     sprite.play(animKey);
-    const hpBar = this.makeBar(30, 9).setPosition(0, this.rtsMode && unit.type !== 'villager' ? -50 : -34);
+    const hpBar = this.makeBar(30, 9).setPosition(0, this.rtsMode && unit.type !== 'villager' ? -44 : -34);
     hpBar.setVisible(false);
     container.add([sprite, hpBar]);
     // Marching columns read as ranks, not a single file: each unit holds a small
@@ -2404,6 +2415,13 @@ export default class GameScene extends Phaser.Scene {
         const img = (be.gfx.list || [])[0] as any;
         be.gfx.setAlpha(b.constructing ? 0.55 : 1);
         if (img) { if (b.constructing && img.setTint) img.setTint(0x88bbff); else if (img.clearTint) img.clearTint(); }
+        // Show the damage bar once a finished building drops below full health.
+        const hpBar = be.gfx.getData('hpBar') as Phaser.GameObjects.Container | undefined;
+        if (hpBar) {
+          const hurt = !b.constructing && b.maxHealth > 0 && b.health < b.maxHealth;
+          hpBar.setVisible(hurt);
+          if (hurt) this.setBarRatio(hpBar, b.health / b.maxHealth);
+        }
       }
       this.cityBuildingCounts.set(b.cityId, (this.cityBuildingCounts.get(b.cityId) || 0) + 1);
     });

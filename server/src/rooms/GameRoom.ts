@@ -587,8 +587,9 @@ export class GameRoom extends Room<GameState> {
   /** Recruit cooldown for a unit type, trimmed by the War Drums tech. */
   private recruitCooldown(player: Player, type: string): number {
     const base = RECRUIT_COOLDOWN[type] ?? 100;
-    // Open Field is a bigger-army mode — train a touch faster than Beat.
-    const modeMult = this.isRts ? 0.6 : 1;
+    // Open Field is a bigger-army mode — humans train faster; bots stay at the
+    // normal cadence so the AI doesn't flood the field early.
+    const modeMult = this.isRts ? (player.isBot ? 1 : 0.6) : 1;
     return Math.round(base * modeMult * (player.hasTech('fast_recruit') ? FAST_RECRUIT_MULT : 1));
   }
 
@@ -820,6 +821,7 @@ export class GameRoom extends Room<GameState> {
 
   private rtsCombat(): void {
     const dead: string[] = [];
+    const deadBuildings: string[] = [];
     this.state.units.forEach(u => {
       if (u.type === 'villager' || u.health <= 0) return;
       // Monks never fight (they heal — see processMonkHealing); follow orders.
@@ -829,18 +831,27 @@ export class GameRoom extends Room<GameState> {
 
       const range = GameRoom.RTS_RANGE_PX[u.type] ?? 66;
       const enemy = this.rtsNearestEnemyUnit(u, GameRoom.RTS_AGGRO_PX);
-      let tx = 0, ty = 0, reach = range, onUnit: UnitNode | null = null, onCity: CityNode | null = null, onLair: LairNode | null = null;
+      let tx = 0, ty = 0, reach = range;
+      let onUnit: UnitNode | null = null, onCity: CityNode | null = null, onLair: LairNode | null = null, onBuilding: BuildingNode | null = null;
 
       if (enemy) {
         onUnit = enemy; tx = enemy.x; ty = enemy.y;
-      } else if (u.orderKind === 'attackmove' || u.isPvE) {
-        // No enemy unit nearby: seek a city/lair to siege.
-        const siege = this.rtsSiegeTarget(u);
-        if (siege.city) { onCity = siege.city; tx = siege.city.x; ty = siege.city.y; reach = range + 80; }
-        else if (siege.lair) { onLair = siege.lair; tx = siege.lair.x; ty = siege.lair.y; reach = range + 50; }
+      } else {
+        // No enemy soldier nearby. Cut down a close-by enemy pawn (attack-movers
+        // chase them across the aggro range; idlers only swat ones right beside
+        // them), then — if pushing — seek a building/city/lair to raze.
+        const pawnR = (u.orderKind === 'attackmove' || u.isPvE) ? GameRoom.RTS_AGGRO_PX : range + 30;
+        const pawn = this.rtsNearestEnemyVillager(u, pawnR);
+        if (pawn) { onUnit = pawn; tx = pawn.x; ty = pawn.y; }
+        else if (u.orderKind === 'attackmove' || u.isPvE) {
+          const siege = this.rtsSiegeTarget(u);
+          if (siege.city) { onCity = siege.city; tx = siege.city.x; ty = siege.city.y; reach = range + 80; }
+          else if (siege.building) { onBuilding = siege.building; tx = siege.building.x; ty = siege.building.y; reach = range + 40; }
+          else if (siege.lair) { onLair = siege.lair; tx = siege.lair.x; ty = siege.lair.y; reach = range + 50; }
+        }
       }
 
-      if (!onUnit && !onCity && !onLair) {
+      if (!onUnit && !onCity && !onLair && !onBuilding) {
         if (u.status === 'fighting') u.status = 'marching';
         u.engaged = false;
         return;
@@ -867,6 +878,10 @@ export class GameRoom extends Room<GameState> {
         const dmg = Math.max(1, Math.floor(TROOP_STATS[u.type]?.attack ?? 5));
         onCity.health = Math.max(0, onCity.health - dmg);
         if (onCity.health <= 0) this.conquerCity(onCity, u.isPvE ? 'pve' : u.ownerId);
+      } else if (onBuilding) {
+        const dmg = Math.max(1, Math.floor(TROOP_STATS[u.type]?.attack ?? 5));
+        onBuilding.health = Math.max(0, onBuilding.health - dmg);
+        if (onBuilding.health <= 0) deadBuildings.push(onBuilding.id);
       } else if (onLair) {
         const dmg = Math.max(1, Math.floor((TROOP_STATS[u.type]?.attack ?? 5) * 0.5));
         onLair.health = Math.max(0, onLair.health - dmg);
@@ -880,8 +895,16 @@ export class GameRoom extends Room<GameState> {
     });
     dead.forEach(id => {
       const u = this.state.units.get(id);
-      if (u && !u.isPvE) this.refundPop(u.ownerId);
+      // Troops free a population slot on death; villagers don't use one.
+      if (u && !u.isPvE && u.type !== 'villager') this.refundPop(u.ownerId);
       this.state.units.delete(id);
+    });
+    deadBuildings.forEach(id => {
+      const b = this.state.buildings.get(id);
+      if (!b) return;
+      // Free a pawn that was channeling construction on the destroyed site.
+      if (b.builderId) { const w = this.state.units.get(b.builderId); if (w) { w.status = 'marching'; w.buildTargetId = ''; } }
+      this.state.buildings.delete(id);
     });
   }
 
@@ -920,10 +943,36 @@ export class GameRoom extends Room<GameState> {
     return best;
   }
 
+  /** Nearest living enemy pawn (villager) within `radius` — soldiers cut these
+   *  down; PvE monsters ignore them so they keep hunting cities. */
+  private rtsNearestEnemyVillager(u: UnitNode, radius: number): UnitNode | null {
+    if (u.isPvE) return null;
+    let best: UnitNode | null = null, bestD = radius;
+    this.state.units.forEach(o => {
+      if (o.ownerId === u.ownerId || o.type !== 'villager' || o.health <= 0) return;
+      const d = Math.hypot(o.x - u.x, o.y - u.y);
+      if (d < bestD) { bestD = d; best = o; }
+    });
+    return best;
+  }
+
+  /** Nearest enemy building within `radius` (owner taken from its home city). */
+  private rtsNearestEnemyBuilding(u: UnitNode, radius: number): { b: BuildingNode; d: number } | null {
+    let best: BuildingNode | null = null, bestD = radius;
+    this.state.buildings.forEach(b => {
+      if (b.health <= 0) return;
+      const c = this.state.cities.get(b.cityId);
+      if (!c || !c.ownerId || c.ownerId === u.ownerId) return;
+      const d = Math.hypot(b.x - u.x, b.y - u.y);
+      if (d < bestD) { bestD = d; best = b; }
+    });
+    return best ? { b: best, d: bestD } : null;
+  }
+
   /** A siege target for an attack-moving/PvE unit: an enemy/neutral city (PvE
    *  hunts its assigned city across the map; players siege what's near), else a
    *  living lair nearby. */
-  private rtsSiegeTarget(u: UnitNode): { city?: CityNode; lair?: LairNode } {
+  private rtsSiegeTarget(u: UnitNode): { city?: CityNode; lair?: LairNode; building?: BuildingNode } {
     if (u.isPvE) {
       const target = u.targetNodeId && this.state.cities.get(u.targetNodeId);
       if (target && target.health > 0) return { city: target };
@@ -936,14 +985,17 @@ export class GameRoom extends Room<GameState> {
       });
       return { city: best };
     }
-    // Player attack-move: siege the nearest enemy/neutral city within aggro.
+    // Player attack-move: raze the nearest enemy structure within aggro —
+    // whichever of the nearest city or building is closer, then a lair.
     let bestCity: CityNode | undefined, bestCityD = GameRoom.RTS_AGGRO_PX + 160;
     this.state.cities.forEach(c => {
       if (c.ownerId === u.ownerId) return;
       const d = Math.hypot(c.x - u.x, c.y - u.y);
       if (d < bestCityD) { bestCityD = d; bestCity = c; }
     });
-    if (bestCity) return { city: bestCity };
+    const eb = this.rtsNearestEnemyBuilding(u, GameRoom.RTS_AGGRO_PX + 160);
+    if (bestCity && (!eb || bestCityD <= eb.d)) return { city: bestCity };
+    if (eb) return { building: eb.b };
     let bestLair: LairNode | undefined, bestLairD = GameRoom.RTS_AGGRO_PX;
     this.state.lairs.forEach(l => {
       if (l.health <= 0) return;
@@ -1157,6 +1209,8 @@ export class GameRoom extends Room<GameState> {
     });
   }
 
+  private static RTS_BOT_GRACE = 360; // ~36s before Open Field bots start training
+
   private processAutoProduce(): void {
     this.state.buildings.forEach(b => {
       const makes = PRODUCES[b.type];
@@ -1167,6 +1221,9 @@ export class GameRoom extends Room<GameState> {
       if (!city || !city.ownerId) { b.autoProduceType = ''; return; }
       const player = this.state.players.get(city.ownerId);
       if (!player) { b.autoProduceType = ''; return; }
+      // Open Field: give the player a calm opening — bots don't train for the
+      // first stretch of the match (they still build up economy/structures).
+      if (this.isRts && player.isBot && this.state.tick < GameRoom.RTS_BOT_GRACE) return;
       this.trySpawnTroop(player, b, b.autoProduceType); // sets produceReadyTick on success
     });
   }
