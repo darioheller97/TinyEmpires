@@ -100,9 +100,10 @@ export default class GameScene extends Phaser.Scene {
   // RTS selection/command state
   private rtsSel = new Set<string>();
   private rtsDragStart: { x: number; y: number } | null = null;
+  private rtsRightDrag = 0; // accumulated right-drag distance (pan vs. click-command)
   private rtsSelBox: Phaser.GameObjects.Graphics | null = null;
   private rtsSelRings: Phaser.GameObjects.Graphics | null = null;
-  private rtsFormation: 'box' | 'line' = 'box';
+  private rtsFormation = 'box'; // box | line | wedge | vanguard
   private rtsTrailGfx: Phaser.GameObjects.Graphics | null = null;
   private rtsTrailCount = -1;
   private rtsBuild: { type: string; img: Phaser.GameObjects.Image; ok: boolean } | null = null;
@@ -613,6 +614,9 @@ export default class GameScene extends Phaser.Scene {
   // Open Field renders units & buildings larger (tiles stay 64px). Beat mode is
   // unchanged. ~1.6× turns the 0.62 unit scale into roughly "size 1".
   private rtsScale(base: number): number { return this.rtsMode ? base * 1.6 : base; }
+  // Mobile field units read smaller than buildings at 1.6×, so troops get a
+  // bigger bump (~0.62 → ~1.5) to feel like proper RTS units on the open map.
+  private rtsUnitScale(base: number): number { return this.rtsMode ? base * 2.4 : base; }
 
   // The keep grows with its town-hall level so progress reads at a glance.
   private castleScale(level: number): number {
@@ -1101,10 +1105,12 @@ export default class GameScene extends Phaser.Scene {
 
     const skin = unitSkin(unit.type, this.playerColors.get(unit.ownerId));
     const container = this.add.container(pos.x, pos.y);
-    const sprite = this.add.sprite(0, 0, `${skin.base}_idle`).setScale(this.rtsScale(skin.scale));
+    // Combat units get the bigger field scale; villagers stay worker-sized.
+    const uScale = unit.type === 'villager' ? this.rtsScale(skin.scale) : this.rtsUnitScale(skin.scale);
+    const sprite = this.add.sprite(0, 0, `${skin.base}_idle`).setScale(uScale);
     const animKey = `${skin.base}_${desiredAnim}`;
     sprite.play(animKey);
-    const hpBar = this.makeBar(30, 9).setPosition(0, -34);
+    const hpBar = this.makeBar(30, 9).setPosition(0, this.rtsMode && unit.type !== 'villager' ? -50 : -34);
     hpBar.setVisible(false);
     container.add([sprite, hpBar]);
     // Marching columns read as ranks, not a single file: each unit holds a small
@@ -1134,7 +1140,7 @@ export default class GameScene extends Phaser.Scene {
     // Spawn pop: my freshly-trained units scale in with a dust ring + chime
     // (skip the initial flood of existing units right after the map builds).
     if (unit.ownerId === this.client?.sessionId && this.time.now - this.mapReadyAt > 1500) {
-      this.spawnPop(sprite, skin.scale, pos.x, pos.y + 8);
+      this.spawnPop(sprite, uScale, pos.x, pos.y + 8);
       playSfx('unit_recruit', { volume: 0.4, throttleMs: 120, throttleKey: 'recruit', x: pos.x, y: pos.y });
     }
   }
@@ -1978,7 +1984,14 @@ export default class GameScene extends Phaser.Scene {
       if (this.rtsMode) {
         if (this.rtsBuild) { this.updateRtsBuildGhost(p); if (p.isDown && p.rightButtonDown()) this.panCamera(p); return; }
         // RTS: right-drag pans the camera, left-drag draws a selection box.
-        if (p.isDown && p.rightButtonDown()) { this.dragMoved = true; this.panCamera(p); }
+        // Only treat the right button as a *pan* (suppressing the move command)
+        // once it has travelled past a small threshold — a plain right-click
+        // always carries a pixel or two of jitter and must still issue a move.
+        if (p.isDown && p.rightButtonDown()) {
+          this.panCamera(p);
+          this.rtsRightDrag += Math.abs(p.x - p.prevPosition.x) + Math.abs(p.y - p.prevPosition.y);
+          if (this.rtsRightDrag > 8) this.dragMoved = true;
+        }
         else if (p.isDown && p.leftButtonDown()) this.rtsUpdateDrag(p);
         return;
       }
@@ -1995,6 +2008,7 @@ export default class GameScene extends Phaser.Scene {
     });
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       this.dragMoved = false;
+      this.rtsRightDrag = 0;
       if (this.rtsMode && p.leftButtonDown()) this.rtsDragStart = { x: p.x, y: p.y };
     });
     this.input.keyboard?.on('keydown-ESC', () => this.cancelTowerPlacement());
@@ -2057,7 +2071,12 @@ export default class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-R', () => this.castRally());
     this.input.keyboard?.on('keydown-SPACE', () => { if (this.castActive) this.handleRhythmHit(); });
     // RTS: F toggles the move formation; B/H/Y/U enter build placement; ESC cancels.
-    this.input.keyboard?.on('keydown-F', () => { if (this.rtsMode) this.rtsFormation = this.rtsFormation === 'box' ? 'line' : 'box'; });
+    this.input.keyboard?.on('keydown-F', () => {
+      if (!this.rtsMode) return;
+      const order = ['box', 'line', 'wedge', 'vanguard'];
+      const i = order.indexOf(this.rtsFormation);
+      this.setRtsFormation(order[(i + 1) % order.length]);
+    });
     this.input.keyboard?.on('keydown-B', () => this.startRtsBuild('barracks'));
     this.input.keyboard?.on('keydown-H', () => this.startRtsBuild('house'));
     this.input.keyboard?.on('keydown-Y', () => this.startRtsBuild('archery'));
@@ -2126,7 +2145,7 @@ export default class GameScene extends Phaser.Scene {
 
   /** Nearest own (or enemy, if `enemy`) non-villager unit within 26px of a point. */
   private rtsUnitAt(world: { x: number; y: number }, enemy: boolean): string | null {
-    let best: string | null = null, bestD = 26;
+    let best: string | null = null, bestD = 38;
     this.unitGfx.forEach((u, id) => {
       if (u.container.getData('isVillager') === true) return;
       const own = u.container.getData('ownerId') === this.client?.sessionId;
@@ -2141,6 +2160,22 @@ export default class GameScene extends Phaser.Scene {
     this.rtsSel = new Set(ids);
     if (ids.length > 0) this.clearSelection(); // close any entity panel
     // Push a lightweight readout to React (count + formation).
+    const cb = this.game.registry.get('onUnitSelection') as ((n: number, f: string) => void) | undefined;
+    cb?.(this.rtsSel.size, this.rtsFormation);
+  }
+
+  // Pick a formation (from the HUD or the F key): set it for future orders and
+  // immediately re-form the current selection in place around its centre.
+  setRtsFormation(type: string): void {
+    if (!this.rtsMode) return;
+    this.rtsFormation = type;
+    const ids = [...this.rtsSel];
+    if (ids.length > 1 && this.client) {
+      const st = this.client.state as any;
+      let cx = 0, cy = 0, n = 0;
+      ids.forEach(id => { const u = st?.units?.get(id); if (u) { cx += u.x; cy += u.y; n++; } });
+      if (n > 0) this.client.moveUnits(ids, cx / n, cy / n, type);
+    }
     const cb = this.game.registry.get('onUnitSelection') as ((n: number, f: string) => void) | undefined;
     cb?.(this.rtsSel.size, this.rtsFormation);
   }
@@ -2161,8 +2196,8 @@ export default class GameScene extends Phaser.Scene {
     if (!this.rtsMode || !this.client) return;
     this.cancelRtsBuild();
     const color = factionOf(this.playerColors.get(this.client.sessionId || ''));
-    const tex: Record<string, string> = { barracks: `barracks2_${color}`, house: `house2a_${color}`, archery: `archery_${color}`, church: `monastery_${color}` };
-    const scl: Record<string, number> = { barracks: 0.5, house: 0.55, archery: 0.5, church: 0.5 };
+    const tex: Record<string, string> = { barracks: `barracks2_${color}`, house: `house2a_${color}`, archery: `archery_${color}`, church: `monastery_${color}`, defense_tower: `tower2_${color}` };
+    const scl: Record<string, number> = { barracks: 0.5, house: 0.55, archery: 0.5, church: 0.5, defense_tower: 0.62 };
     if (!tex[type]) return;
     const img = this.add.image(0, 0, tex[type]).setScale(this.rtsScale(scl[type])).setOrigin(0.5, 0.7).setAlpha(0.6).setDepth(196);
     this.rtsBuild = { type, img, ok: true };

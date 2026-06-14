@@ -12,10 +12,11 @@ interface Props {
   onTechsUpdate?: (techs: string[]) => void;
   onMinimapData?: (data: MinimapData) => void;
   onGameEvent?: (e: GameEvent) => void;
+  onUnitSelection?: (count: number, formation: string) => void;
   onSceneReady?: (scene: GameScene) => void;
 }
 
-export default function PhaserGame({ client, onResourceUpdate, onMapBounds, onSelectionChange, onBuildingsUpdate, onTechsUpdate, onMinimapData, onGameEvent, onSceneReady }: Props) {
+export default function PhaserGame({ client, onResourceUpdate, onMapBounds, onSelectionChange, onBuildingsUpdate, onTechsUpdate, onMinimapData, onGameEvent, onUnitSelection, onSceneReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
 
@@ -47,6 +48,7 @@ export default function PhaserGame({ client, onResourceUpdate, onMapBounds, onSe
       if (onTechsUpdate) game.registry.set('onTechsUpdate', onTechsUpdate);
       if (onMinimapData) game.registry.set('onMinimapData', onMinimapData);
       if (onGameEvent) game.registry.set('onGameEvent', onGameEvent);
+      if (onUnitSelection) game.registry.set('onUnitSelection', onUnitSelection);
 
       game.events.on('ready', () => {
         const scene = game.scene.getScene('GameScene') as GameScene;

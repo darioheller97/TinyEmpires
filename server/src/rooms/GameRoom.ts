@@ -223,7 +223,7 @@ export class GameRoom extends Room<GameState> {
 
     map.cities.forEach(c => {
       const city = new CityNode(c.id, c.x, c.y, c.name);
-      city.maxBuildings = 2;
+      city.maxBuildings = this.isRts ? 12 : 2;
       this.state.cities.set(c.id, city);
     });
     // RTS (Open Field) has no pre-built road network — paths emerge from villager
@@ -393,7 +393,7 @@ export class GameRoom extends Room<GameState> {
       player.gold -= cost;
       city.townHallLevel++;
       this.recomputeInfluence(city);
-      city.maxBuildings = 2 + (city.townHallLevel - 1) * 2; // +2 build slots per upgrade
+      city.maxBuildings = (this.isRts ? 12 : 2) + (city.townHallLevel - 1) * 2; // +2 build slots per upgrade
       city.maxHealth = 1000 + (city.townHallLevel - 1) * 500;
       city.health = city.maxHealth;
     });
@@ -587,7 +587,9 @@ export class GameRoom extends Room<GameState> {
   /** Recruit cooldown for a unit type, trimmed by the War Drums tech. */
   private recruitCooldown(player: Player, type: string): number {
     const base = RECRUIT_COOLDOWN[type] ?? 100;
-    return Math.round(base * (player.hasTech('fast_recruit') ? FAST_RECRUIT_MULT : 1));
+    // Open Field is a bigger-army mode — train a touch faster than Beat.
+    const modeMult = this.isRts ? 0.6 : 1;
+    return Math.round(base * modeMult * (player.hasTech('fast_recruit') ? FAST_RECRUIT_MULT : 1));
   }
 
   // Train a unit at a SPECIFIC production building: respects its recruit cooldown
@@ -715,6 +717,7 @@ export class GameRoom extends Room<GameState> {
     let home: CityNode | undefined, hd = Infinity;
     this.state.cities.forEach(c => { if (c.ownerId !== player.id) return; const d = Math.hypot(c.x - cx, c.y - cy); if (d < hd) { hd = d; home = c; } });
     if (!home) return false;
+    if (this.buildingsOf(home.id).length >= home.maxBuildings) return false; // city's build slots full
     player.wood -= cost.wood; player.food -= cost.food; player.gold -= cost.gold;
     const bId = nextId('bld');
     const b = new BuildingNode(bId, home.id, type as BuildingType, cx, cy);
@@ -1024,31 +1027,69 @@ export class GameRoom extends Room<GameState> {
     return this.state.trails.has(String(t.r * this.nav.cols + t.c)) ? GameRoom.TRAIL_SPEED_MULT : 1;
   }
 
-  // Formation slots (relative to the destination) for a group move order.
-  private formationOffsets(n: number, formation: string): { dx: number; dy: number }[] {
-    const S = 40, out: { dx: number; dy: number }[] = [];
+  // Role rank for formation layering: melee take the front slots, ranged/support
+  // settle into the back rows (lower number = nearer the front, toward the foe).
+  private static ROLE_RANK: Record<string, number> = { knight: 0, lancer: 1, archer: 2, monk: 3 };
+
+  // Formation slots in *local* space: `lx` = lateral (right of heading), `ly` =
+  // depth (+ = toward the move target / front), `rank` = row from the front
+  // (0 = front line). The caller rotates these onto the move heading and assigns
+  // melee to the low-rank (front) slots.
+  private formationSlots(n: number, formation: string): { lx: number; ly: number; rank: number }[] {
+    const S = 46, out: { lx: number; ly: number; rank: number }[] = [];
     if (formation === 'line') {
-      for (let i = 0; i < n; i++) out.push({ dx: (i - (n - 1) / 2) * S, dy: 0 });
-    } else {
-      const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
-      const rows = Math.ceil(n / cols);
-      for (let i = 0; i < n; i++) {
-        const c = i % cols, r = Math.floor(i / cols);
-        out.push({ dx: (c - (cols - 1) / 2) * S, dy: (r - (rows - 1) / 2) * S });
+      for (let i = 0; i < n; i++) out.push({ lx: (i - (n - 1) / 2) * S, ly: 0, rank: 0 });
+      return out;
+    }
+    if (formation === 'wedge') {
+      // Arrowhead: a 1-wide tip at the front, each rank behind it one pair wider.
+      let placed = 0, r = 0;
+      while (placed < n) {
+        const inRow = Math.min(r * 2 + 1, n - placed);
+        for (let c = 0; c < inRow; c++) { out.push({ lx: (c - (inRow - 1) / 2) * S, ly: 0, rank: r }); placed++; }
+        r++;
       }
+      const rows = r;
+      out.forEach(s => { s.ly = (rows - 1 - s.rank) * S * 0.9; });
+      const meanLy = out.reduce((a, s) => a + s.ly, 0) / out.length;
+      out.forEach(s => { s.ly -= meanLy; });
+      return out;
+    }
+    // box (compact square) or vanguard (wide + shallow → a clear front/back split)
+    const cols = formation === 'vanguard'
+      ? Math.max(2, Math.ceil(n / 2))
+      : Math.max(1, Math.ceil(Math.sqrt(n)));
+    const rows = Math.ceil(n / cols);
+    for (let i = 0; i < n; i++) {
+      const c = i % cols, r = Math.floor(i / cols);
+      out.push({ lx: (c - (cols - 1) / 2) * S, ly: ((rows - 1) / 2 - r) * S, rank: r });
     }
     return out;
   }
 
-  // Issue a move/attack-move order: assign formation slots + A* a path to each.
+  // Issue a move/attack-move order: orient a role-layered formation along the
+  // move heading (front rows toward the target), then A* a path to each slot.
   private issueMoveOrder(ownerId: string, ids: string[], x: number, y: number, formation: string, kind: string): void {
     if (!this.nav) return;
     const units = (ids || [])
       .map(id => this.state.units.get(id))
       .filter((u): u is UnitNode => !!u && u.ownerId === ownerId && u.type !== 'villager' && u.health > 0);
     if (units.length === 0) return;
-    const offsets = this.formationOffsets(units.length, formation);
-    units.forEach((u, i) => this.rtsSetDestination(u, x + offsets[i].dx, y + offsets[i].dy, kind));
+    // Heading = from the group's centre toward the destination (default: "up").
+    let cx = 0, cy = 0; units.forEach(u => { cx += u.x; cy += u.y; }); cx /= units.length; cy /= units.length;
+    let hx = x - cx, hy = y - cy; const hl = Math.hypot(hx, hy);
+    if (hl < 1) { hx = 0; hy = -1; } else { hx /= hl; hy /= hl; }
+    const right = { x: hy, y: -hx };
+    const slots = this.formationSlots(units.length, formation);
+    // Melee to the front slots, ranged/support to the back.
+    const sortedUnits = [...units].sort((a, b) => (GameRoom.ROLE_RANK[a.type] ?? 9) - (GameRoom.ROLE_RANK[b.type] ?? 9));
+    const sortedSlots = [...slots].sort((a, b) => a.rank - b.rank);
+    sortedUnits.forEach((u, i) => {
+      const s = sortedSlots[i];
+      const dx = s.lx * right.x + s.ly * hx;
+      const dy = s.lx * right.y + s.ly * hy;
+      this.rtsSetDestination(u, x + dx, y + dy, kind);
+    });
   }
 
   private rtsSetDestination(u: UnitNode, x: number, y: number, kind: string): void {
@@ -1099,7 +1140,7 @@ export class GameRoom extends Room<GameState> {
     });
     this.state.players.forEach(player => {
       const acc = income.get(player.id);
-      if (!acc) { player.populationCap = 10; return; }
+      if (!acc) { player.populationCap = this.isRts ? 40 : 10; return; }
       let { w, f, g } = acc;
       if (player.hasTech('prod_wood')) w *= 1.5;
       if (player.hasTech('prod_food')) f *= 1.5;
@@ -1108,7 +1149,8 @@ export class GameRoom extends Room<GameState> {
       player.wood += w;
       player.food += f;
       player.gold += g;
-      player.populationCap = acc.pop;
+      // Open Field fields larger armies — a higher base cap on top of houses.
+      player.populationCap = this.isRts ? acc.pop + 30 : acc.pop;
       // Bots don't micro villagers, so a flat stipend keeps them building and
       // producing; difficulty scales the income (easy poorer, hard richer).
       if (player.isBot) { const m = this.aiCfg().econ; player.wood += 7 * m; player.food += 6 * m; player.gold += 4 * m; }
@@ -1168,7 +1210,7 @@ export class GameRoom extends Room<GameState> {
           bot.gold -= city.townHallLevel * 50;
           city.townHallLevel++;
           this.recomputeInfluence(city);
-          city.maxBuildings = 2 + (city.townHallLevel - 1) * 2;
+          city.maxBuildings = (this.isRts ? 12 : 2) + (city.townHallLevel - 1) * 2;
           city.maxHealth = 1000 + (city.townHallLevel - 1) * 500;
           city.health = city.maxHealth;
         }
@@ -2137,7 +2179,7 @@ export class GameRoom extends Room<GameState> {
 
     city.townHallLevel = 1;
     city.influenceRadius = 150;
-    city.maxBuildings = 2;
+    city.maxBuildings = this.isRts ? 12 : 2;
     city.maxHealth = 1000;
     if (newOwnerId === 'pve') {
       city.ownerId = '';

@@ -13,6 +13,7 @@ import Lobby, { LobbyView, LobbyPlayer } from './ui/Lobby';
 import EndScreen from './ui/EndScreen';
 import HowToPlay from './ui/HowToPlay';
 import ArmyOrders from './ui/ArmyOrders';
+import FormationMenu from './ui/FormationMenu';
 import WorkSong from './ui/WorkSong';
 import SettingsMenu from './ui/SettingsMenu';
 import { PANEL as SKIN_PANEL } from './ui/skin';
@@ -97,6 +98,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workSongOpen, setWorkSongOpen] = useState(false);
   const [gameMode, setGameMode] = useState<string>('beat');
+  const [unitSel, setUnitSel] = useState<{ count: number; formation: string }>({ count: 0, formation: 'box' });
   const sceneRef = useRef<GameScene | null>(null);
   const lastBoostSent = useRef(-1);
   const prevGold = useRef(20);
@@ -189,9 +191,12 @@ export default function App() {
 
   const handleBuild = useCallback((type: string) => {
     if (selection.type !== 'city') return;
+    // Open Field: every building is placed by sight with a follow-the-cursor
+    // ghost (like the defense tower), not auto-dropped on the city ring.
+    if (gameMode === 'rts') { sceneRef.current?.startRtsBuild(type); playSfx('ui_click', { volume: 0.4 }); return; }
     if (type === 'defense_tower') { sceneRef.current?.beginTowerPlacement(selection.id); playSfx('ui_click', { volume: 0.4 }); return; }
     client()?.buildStructure(selection.id, type); playSfx('build_place', { volume: 0.55 });
-  }, [selection]);
+  }, [selection, gameMode]);
   const handleUpgradeTownHall = useCallback(() => {
     if (selection.type === 'city') { client()?.upgradeTownHall(selection.id); playSfx('build_place', { volume: 0.55 }); }
   }, [selection]);
@@ -207,6 +212,9 @@ export default function App() {
   const handleHireVillager = useCallback((resourceType: string) => {
     if (selection.type === 'city') { client()?.spawnVillager(selection.id, resourceType); playSfx('unit_recruit', { volume: 0.5 }); }
   }, [selection]);
+  const handleUnitSelection = useCallback((count: number, formation: string) => {
+    setUnitSel({ count, formation });
+  }, []);
   const handleResearch = useCallback((techId: string) => {
     client()?.researchTech(techId); playSfx('build_place', { volume: 0.5 });
   }, []);
@@ -268,6 +276,7 @@ export default function App() {
         onTechsUpdate={handleTechsUpdate}
         onMinimapData={handleMinimapData}
         onGameEvent={handleGameEvent}
+        onUnitSelection={handleUnitSelection}
         onSceneReady={handleSceneReady}
       />
 
@@ -346,6 +355,16 @@ export default function App() {
                 Click or press <b>R</b> to aim troops down a road. No arrow = units spread out.
               </div>
             </div>
+          </div>
+        )}
+        {gameMode === 'rts' && unitSel.count > 1 && (
+          <div style={BOTTOM_RIGHT}>
+            <FormationMenu
+              visible
+              count={unitSel.count}
+              formation={unitSel.formation}
+              onSelect={(type) => { sceneRef.current?.setRtsFormation(type); playSfx('ui_click', { volume: 0.4 }); }}
+            />
           </div>
         )}
         {selection.type === 'army' && (
